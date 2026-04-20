@@ -212,7 +212,7 @@ pub fn default_pieces() -> Vec<Piece> {
             lock_gap: true,
         },
         HappyFace {
-            origin: (-910, -400),
+            origin: (-50, -10),
             size: 3,
             color: "#00ff7dff".to_string(),
             visible: true,

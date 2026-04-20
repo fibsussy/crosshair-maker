@@ -32,6 +32,10 @@ crosshair-maker
 
 Launch from your app menu or run `crosshair-maker` in a terminal.
 
+## krosshair integration
+
+crosshair-maker works out of the box with [krosshair](https://github.com/fibsussy/krosshair), a Vulkan crosshair overlay for Linux. The currently selected crosshair is automatically exported to `~/.config/crosshair-maker/projects/current.png`, which krosshair picks up as its default — just launch your game with `export KROSSHAIR=1` and go.
+
 ## License
 
 GPL-3.0
