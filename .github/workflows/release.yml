@@ -44,6 +44,7 @@ jobs:
         run: |
           sed -i "s/pkgver=.*/pkgver=${{ steps.bump.outputs.new_version }}/" PKGBUILD
           sed -i "s/pkgver=.*/pkgver=${{ steps.bump.outputs.new_version }}/" aur/PKGBUILD
+          cp crosshair-maker.install aur/
           cd aur && makepkg --printsrcinfo > .SRCINFO
       - name: Upload version files (uncommitted)
         uses: actions/upload-artifact@v6
@@ -146,7 +147,7 @@ jobs:
           makepkg --printsrcinfo > .SRCINFO
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
-          git add PKGBUILD .SRCINFO
+          git add PKGBUILD .SRCINFO crosshair-maker.install
           git commit -m "Update to v${{ needs.version.outputs.new_version }}" || echo "No changes to commit"
           git push origin master
         env:
