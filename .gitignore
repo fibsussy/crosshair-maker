@@ -1,0 +1,20 @@
+# Rust build artifacts
+/target/
+
+# Arch package build artifacts
+/pkg/
+*.pkg.tar.zst
+*.pkg.tar.xz
+*.tar.gz
+crosshair-maker-linux-*
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db

@@ -1,0 +1,165 @@
+name: Semantic Versioning and Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  version:
+    runs-on: self-hosted
+    outputs:
+      new_version: ${{ steps.bump.outputs.new_version }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+      - name: Install cargo-bump
+        run: cargo install cargo-bump --locked
+      - name: Calculate version bump
+        id: bump
+        run: |
+          LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null || echo "")
+          if [ -n "$LAST_TAG" ]; then
+            COMMITS=$(git log $LAST_TAG..HEAD --pretty=%s)
+          else
+            COMMITS=$(git log HEAD --pretty=%s)
+          fi
+          if echo "$COMMITS" | grep -q "^BREAKING CHANGE:"; then
+            cargo bump major
+          elif echo "$COMMITS" | grep -q "^feat:"; then
+            cargo bump minor
+          else
+            cargo bump patch
+          fi
+          NEW_VERSION=$(cargo metadata --no-deps --format-version 1 | jq -r '.packages[] | select(.name == "crosshair-maker") | .version')
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+          cargo check
+      - name: Bump PKGBUILD versions
+        run: |
+          sed -i "s/pkgver=.*/pkgver=${{ steps.bump.outputs.new_version }}/" PKGBUILD
+          sed -i "s/pkgver=.*/pkgver=${{ steps.bump.outputs.new_version }}/" aur/PKGBUILD
+          cd aur && makepkg --printsrcinfo > .SRCINFO
+      - name: Upload version files (uncommitted)
+        uses: actions/upload-artifact@v6
+        with:
+          name: version-files
+          path: |
+            Cargo.toml
+            Cargo.lock
+            PKGBUILD
+            aur/
+
+  build:
+    needs: [version]
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          name: version-files
+          path: .
+      - name: Build binary
+        run: cargo build --release
+      - name: Determine architecture
+        id: arch
+        run: |
+          ARCH=$(uname -m)
+          echo "arch=$ARCH" >> $GITHUB_OUTPUT
+          if [ "$ARCH" = "x86_64" ]; then
+            echo "arch_name=x86_64" >> $GITHUB_OUTPUT
+          elif [ "$ARCH" = "aarch64" ]; then
+            echo "arch_name=aarch64" >> $GITHUB_OUTPUT
+          fi
+      - name: Create tarball
+        run: |
+          mkdir -p crosshair-maker-${{ needs.version.outputs.new_version }}-${{ steps.arch.outputs.arch_name }}
+          cp target/release/crosshair-maker crosshair-maker-${{ needs.version.outputs.new_version }}-${{ steps.arch.outputs.arch_name }}/
+          cp LICENSE crosshair-maker-${{ needs.version.outputs.new_version }}-${{ steps.arch.outputs.arch_name }}/
+          tar -czf crosshair-maker-${{ needs.version.outputs.new_version }}-${{ steps.arch.outputs.arch_name }}.tar.gz -C crosshair-maker-${{ needs.version.outputs.new_version }}-${{ steps.arch.outputs.arch_name }} .
+      - name: Generate checksum
+        run: sha256sum crosshair-maker-${{ needs.version.outputs.new_version }}-${{ steps.arch.outputs.arch_name }}.tar.gz > crosshair-maker-${{ needs.version.outputs.new_version }}-${{ steps.arch.outputs.arch_name }}.sha256
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v6
+        with:
+          name: crosshair-maker-${{ needs.version.outputs.new_version }}-${{ steps.arch.outputs.arch_name }}
+          path: |
+            crosshair-maker-${{ needs.version.outputs.new_version }}-${{ steps.arch.outputs.arch_name }}.tar.gz
+            crosshair-maker-${{ needs.version.outputs.new_version }}-${{ steps.arch.outputs.arch_name }}.sha256
+
+  commit-and-release:
+    needs: [version, build]
+    runs-on: self-hosted
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          ref: main
+          fetch-depth: 0
+      - uses: actions/download-artifact@v7
+        with:
+          path: artifacts
+      - name: Restore version files from successful build
+        run: |
+          mkdir -p aur
+          cp artifacts/version-files/Cargo.toml .
+          cp artifacts/version-files/Cargo.lock .
+          cp artifacts/version-files/PKGBUILD .
+          cp -r artifacts/version-files/aur/* aur/
+      - name: Commit version bump and create tag
+        run: |
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+          git add Cargo.toml Cargo.lock PKGBUILD aur/
+          git commit -m "chore: bump version to v${{ needs.version.outputs.new_version }}" || echo "No changes to commit"
+          git tag "v${{ needs.version.outputs.new_version }}" -f
+          git push origin main
+          git push origin "v${{ needs.version.outputs.new_version }}" -f
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Push to AUR
+        run: |
+          mkdir -p ~/.ssh
+          echo "$AUR_SSH_KEY" > ~/.ssh/aur
+          chmod 600 ~/.ssh/aur
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
+          rm -rf aur
+          if git clone ssh://aur@aur.archlinux.org/crosshair-maker.git aur 2>&1; then
+            echo "Cloned existing AUR repo"
+            cp -r artifacts/version-files/aur/* aur/
+            cd aur
+          else
+            echo "Creating new AUR repo"
+            mkdir aur
+            cp -r artifacts/version-files/aur/* aur/
+            cd aur
+            git init
+            git remote add origin ssh://aur@aur.archlinux.org/crosshair-maker.git
+          fi
+          makepkg --printsrcinfo > .SRCINFO
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+          git add PKGBUILD .SRCINFO
+          git commit -m "Update to v${{ needs.version.outputs.new_version }}" || echo "No changes to commit"
+          git push origin master
+        env:
+          AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
+      - name: Create release with assets
+        run: |
+          ARCH=$(uname -m)
+          if [ "$ARCH" = "x86_64" ]; then
+            ARCH_NAME="x86_64"
+          elif [ "$ARCH" = "aarch64" ]; then
+            ARCH_NAME="aarch64"
+          fi
+          gh release delete "v${{ needs.version.outputs.new_version }}" --yes 2>/dev/null || true
+          gh release create "v${{ needs.version.outputs.new_version }}" \
+            --title "v${{ needs.version.outputs.new_version }}" \
+            --notes "Release v${{ needs.version.outputs.new_version }}" \
+            artifacts/crosshair-maker-${{ needs.version.outputs.new_version }}-${ARCH_NAME}/crosshair-maker-${{ needs.version.outputs.new_version }}-${ARCH_NAME}.tar.gz \
+            artifacts/crosshair-maker-${{ needs.version.outputs.new_version }}-${ARCH_NAME}/crosshair-maker-${{ needs.version.outputs.new_version }}-${ARCH_NAME}.sha256
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
