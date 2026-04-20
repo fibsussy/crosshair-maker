@@ -9,6 +9,7 @@ license=('GPL-3.0-only')
 depends=('libx11' 'libxcb' 'wayland' 'libxkbcommon' 'vulkan-icd-loader')
 makedepends=('rust' 'cargo')
 options=('!debug')
+install=crosshair-maker.install
 
 source=()
 sha256sums=()
