@@ -134,12 +134,13 @@ jobs:
             echo "Cloned existing AUR repo"
             cp -r artifacts/version-files/aur/* aur/
             cd aur
+            git branch -M master
           else
             echo "Creating new AUR repo"
             mkdir aur
             cp -r artifacts/version-files/aur/* aur/
             cd aur
-            git init
+            git init -b master
             git remote add origin ssh://aur@aur.archlinux.org/crosshair-maker.git
           fi
           makepkg --printsrcinfo > .SRCINFO
