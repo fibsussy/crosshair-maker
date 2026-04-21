@@ -133,23 +133,27 @@ jobs:
           rm -rf aur
           if git clone ssh://aur@aur.archlinux.org/crosshair-maker.git aur 2>&1; then
             echo "Cloned existing AUR repo"
-            cp -r artifacts/version-files/aur/* aur/
             cd aur
-            git branch -M master
+            git fetch origin
+            git reset --hard origin/master
+            cd ..
           else
             echo "Creating new AUR repo"
             mkdir aur
-            cp -r artifacts/version-files/aur/* aur/
             cd aur
             git init -b master
             git remote add origin ssh://aur@aur.archlinux.org/crosshair-maker.git
+            cd ..
           fi
+          rm -rf aur/*
+          cp -r artifacts/version-files/aur/* aur/
+          cd aur
           makepkg --printsrcinfo > .SRCINFO
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           git add PKGBUILD .SRCINFO crosshair-maker.install
           git commit -m "Update to v${{ needs.version.outputs.new_version }}" || echo "No changes to commit"
-          git push origin master -f
+          git push origin master
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
       - name: Create release with assets
