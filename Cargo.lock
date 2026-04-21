@@ -792,6 +792,7 @@ dependencies = [
  "eframe",
  "egui",
  "image",
+ "png 0.17.16",
  "resvg",
  "rfd",
  "serde",

@@ -9,6 +9,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
             length,
             thickness,
             color,
+            color_type,
             visible,
             odd_anchor,
             lock_gap,
@@ -21,6 +22,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
                 length: *length,
                 thickness: *thickness,
                 color: color.clone(),
+                color_type: color_type.clone(),
                 visible: *visible,
                 odd_anchor: *odd_anchor,
                 lock_gap: *lock_gap,
@@ -30,6 +32,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
             origin,
             size,
             color,
+            color_type,
             visible,
             odd_anchor,
         } => {
@@ -38,6 +41,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
                 origin: (ox + dx, oy + dy),
                 size: *size,
                 color: color.clone(),
+                color_type: color_type.clone(),
                 visible: *visible,
                 odd_anchor: *odd_anchor,
             }
@@ -47,6 +51,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
             vector,
             thickness,
             color,
+            color_type,
             visible,
             odd_anchor,
         } => {
@@ -56,6 +61,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
                 vector: *vector,
                 thickness: *thickness,
                 color: color.clone(),
+                color_type: color_type.clone(),
                 visible: *visible,
                 odd_anchor: *odd_anchor,
             }
@@ -66,6 +72,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
             height,
             rotation,
             color,
+            color_type,
             visible,
             odd_anchor,
         } => {
@@ -76,6 +83,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
                 height: *height,
                 rotation: *rotation,
                 color: color.clone(),
+                color_type: color_type.clone(),
                 visible: *visible,
                 odd_anchor: *odd_anchor,
             }
@@ -122,6 +130,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
             origin,
             size,
             color,
+            color_type,
             visible,
             odd_anchor,
         } => {
@@ -130,6 +139,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
                 origin: (ox + dx, oy + dy),
                 size: *size,
                 color: color.clone(),
+                color_type: color_type.clone(),
                 visible: *visible,
                 odd_anchor: *odd_anchor,
             }

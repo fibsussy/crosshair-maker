@@ -319,11 +319,29 @@ fn extent_of_primitive(
     }
 }
 
+fn is_eraser(piece: &Piece) -> bool {
+    matches!(piece.color_type(), crate::types::ColorType::Eraser)
+}
+
+fn draw_piece(svg: &mut String, cx: i32, cy: i32, piece: &Piece) {
+    match piece {
+        Piece::Cross { .. } => cross::draw_cross(svg, cx, cy, piece),
+        Piece::Dot { .. } => dot::draw_dot(svg, cx, cy, piece),
+        Piece::Line { .. } => line::draw_line(svg, cx, cy, piece),
+        Piece::Rectangle { .. } => rectangle::draw_rectangle(svg, cx, cy, piece),
+        Piece::HappyFace { .. } => happy_face::draw_happy_face(svg, cx, cy, piece),
+        Piece::RectPattern { .. } | Piece::CircPattern { .. } => {}
+    }
+}
+
 pub fn generate_svg(extent_x: u32, extent_y: u32, pieces: &[Piece]) -> String {
     let width = extent_x.cast_signed() * 2;
     let height = extent_y.cast_signed() * 2;
     let cx = width / 2;
     let cy = height / 2;
+
+    let expanded = expand_pieces(pieces);
+    let has_erasers = expanded.iter().any(|p| is_eraser(p));
 
     let mut svg = String::new();
     write!(
@@ -337,14 +355,31 @@ pub fn generate_svg(extent_x: u32, extent_y: u32, pieces: &[Piece]) -> String {
     )
     .unwrap();
 
-    for piece in expand_pieces(pieces) {
-        match piece {
-            Piece::Cross { .. } => cross::draw_cross(&mut svg, cx, cy, &piece),
-            Piece::Dot { .. } => dot::draw_dot(&mut svg, cx, cy, &piece),
-            Piece::Line { .. } => line::draw_line(&mut svg, cx, cy, &piece),
-            Piece::Rectangle { .. } => rectangle::draw_rectangle(&mut svg, cx, cy, &piece),
-            Piece::HappyFace { .. } => happy_face::draw_happy_face(&mut svg, cx, cy, &piece),
-            Piece::RectPattern { .. } | Piece::CircPattern { .. } => {}
+    if has_erasers {
+        // Build mask: white everywhere, then eraser shapes punch black holes.
+        write!(svg, r#"<defs><mask id="em" maskUnits="userSpaceOnUse" x="0" y="0" width="{width}" height="{height}">"#).unwrap();
+        write!(svg, r#"<rect x="0" y="0" width="{width}" height="{height}" fill="white"/>"#).unwrap();
+        for piece in &expanded {
+            if is_eraser(piece) {
+                // Draw eraser shapes as white fill inside a black-fill override
+                let mut eraser_piece = piece.clone();
+                eraser_piece.set_color_override("#000000ff");
+                draw_piece(&mut svg, cx, cy, &eraser_piece);
+            }
+        }
+        svg.push_str("</mask></defs>");
+
+        // Draw non-eraser pieces inside the masked group
+        write!(svg, r#"<g mask="url(#em)">"#).unwrap();
+        for piece in &expanded {
+            if !is_eraser(piece) {
+                draw_piece(&mut svg, cx, cy, piece);
+            }
+        }
+        svg.push_str("</g>");
+    } else {
+        for piece in &expanded {
+            draw_piece(&mut svg, cx, cy, piece);
         }
     }
 

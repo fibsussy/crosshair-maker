@@ -71,17 +71,12 @@ pub fn project_dir() -> PathBuf {
     path
 }
 
-/// Export SVG+PNG as "current" in the projects directory.
-pub fn save_current_exports(svg: &str, png_bytes: &[u8], width: u32, height: u32) {
+/// Export "current" crosshair in the projects directory.
+/// Saves as current.png (static) or current.apng (animated), deleting the other.
+pub fn save_current_exports(pieces: &[crate::types::Piece]) {
     let dir = project_dir();
-    let _ = std::fs::write(dir.join("current.svg"), svg);
-    let _ = image::save_buffer(
-        dir.join("current.png"),
-        png_bytes,
-        width,
-        height,
-        image::ColorType::Rgba8,
-    );
+    let current_path = dir.join("current.json"); // virtual path for extension swapping
+    crate::preview::save_exports(&current_path, pieces);
 }
 
 pub fn save_project(project: &CrosshairProject, config: &mut AppConfig, path: Option<PathBuf>) -> Option<PathBuf> {
@@ -104,7 +99,28 @@ pub fn save_project(project: &CrosshairProject, config: &mut AppConfig, path: Op
 
 pub fn load_project(path: &PathBuf) -> Option<CrosshairProject> {
     let data = std::fs::read_to_string(path).ok()?;
-    serde_json::from_str(&data).ok()
+    let mut project: CrosshairProject = serde_json::from_str(&data).ok()?;
+    // Migrate legacy color types
+    for piece in &mut project.pieces {
+        migrate_color_types(piece);
+    }
+    Some(project)
+}
+
+fn migrate_color_types(piece: &mut crate::types::Piece) {
+    use crate::types::Piece;
+    match piece {
+        Piece::Cross { color_type, .. }
+        | Piece::Dot { color_type, .. }
+        | Piece::Line { color_type, .. }
+        | Piece::Rectangle { color_type, .. }
+        | Piece::HappyFace { color_type, .. } => {
+            color_type.migrate();
+        }
+        Piece::RectPattern { obj, .. } | Piece::CircPattern { obj, .. } => {
+            migrate_color_types(obj);
+        }
+    }
 }
 
 pub fn sanitize_filename(name: &str) -> String {

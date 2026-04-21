@@ -7,7 +7,6 @@ mod preview;
 mod ui_pieces;
 mod ui_properties;
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eframe::egui;
@@ -28,7 +27,7 @@ struct CrosshairApp {
     show_delete_confirm: bool,
     new_project_name: String,
     piece_thumbnails: preview::PieceThumbnailCache,
-    recent_thumbnails: HashMap<PathBuf, Option<egui::TextureHandle>>,
+    recent_thumbnails: preview::RecentThumbnailCache,
 }
 
 impl CrosshairApp {
@@ -63,32 +62,26 @@ impl CrosshairApp {
             show_delete_confirm: false,
             new_project_name: String::new(),
             piece_thumbnails: preview::PieceThumbnailCache::new(),
-            recent_thumbnails: HashMap::new(),
+            recent_thumbnails: preview::RecentThumbnailCache::new(),
         }
     }
 
     fn update_piece_thumbnails(&mut self, ctx: &egui::Context) {
-        self.piece_thumbnails.update(ctx, &self.pieces);
+        let frame = self.preview.animation_frame();
+        self.piece_thumbnails.update(ctx, &self.pieces, frame);
     }
 
     fn load_recent_thumbnails(&mut self, ctx: &egui::Context) {
-        for path in &self.config.recent_crosshairs {
-            if self.recent_thumbnails.contains_key(path) {
-                continue;
-            }
-            let tex = preview::load_crosshair_thumbnail(path, 24).map(|img| {
-                ctx.load_texture(
-                    format!("recent_thumb_{}", path.display()),
-                    img,
-                    egui::TextureOptions::NEAREST,
-                )
-            });
-            self.recent_thumbnails.insert(path.clone(), tex);
+        // Keep the currently-open project's thumbnail in sync with live edits
+        if let Some(ref path) = self.current_file_path {
+            self.recent_thumbnails.set_live_pieces(path, &self.pieces);
         }
+        let frame = self.preview.animation_frame();
+        self.recent_thumbnails.update(ctx, &self.config.recent_crosshairs, frame);
     }
 
     fn invalidate_recent_thumbnail(&mut self, path: &PathBuf) {
-        self.recent_thumbnails.remove(path);
+        self.recent_thumbnails.invalidate(path);
     }
 
     fn save_with_exports(&self, path: &std::path::Path) {
@@ -98,16 +91,12 @@ impl CrosshairApp {
 
     fn update_current_if_matches(&self, path: &std::path::Path) {
         if self.config.current_crosshair.as_ref().map(|p| p.as_path()) == Some(path) {
-            if let Some((svg, pixmap)) = preview::render_png(&self.pieces) {
-                project_io::save_current_exports(&svg, pixmap.data(), pixmap.width(), pixmap.height());
-            }
+            project_io::save_current_exports(&self.pieces);
         }
     }
 
     fn set_as_current(&mut self, path: PathBuf) {
-        if let Some((svg, pixmap)) = preview::render_png(&self.pieces) {
-            project_io::save_current_exports(&svg, pixmap.data(), pixmap.width(), pixmap.height());
-        }
+        project_io::save_current_exports(&self.pieces);
         self.config.current_crosshair = Some(path);
         project_io::save_config(&self.config);
     }
@@ -167,6 +156,96 @@ impl CrosshairApp {
                 Err(e) => {
                     self.status_message = format!("SVG parse error: {e}");
                 }
+            }
+        }
+    }
+
+    fn export_apng(&mut self) {
+        use std::fs::File;
+        use std::io::BufWriter;
+        use crate::svg_rendering::{generate_svg, infer_extent};
+
+        if let Some(path) = rfd::FileDialog::new()
+            .set_file_name("crosshair.apng")
+            .save_file()
+        {
+            let (extent_x, extent_y) = infer_extent(&self.pieces);
+            let w = (extent_x * 2).max(1) as u32;
+            let h = (extent_y * 2).max(1) as u32;
+            let num_frames: u32 = 30;
+
+            let has_animation = self.pieces.iter().any(|p| {
+                matches!(
+                    p.color_type(),
+                    crate::types::ColorType::Rainbow { .. } | crate::types::ColorType::GradientCycle { .. }
+                )
+            });
+
+            if !has_animation {
+                self.status_message = "No animated colors to export as APNG".to_string();
+                return;
+            }
+
+            let mut frames: Vec<Vec<u8>> = Vec::new();
+            for i in 0..num_frames {
+                let frame = i as f64 / num_frames as f64;
+                let colored_pieces: Vec<crate::types::Piece> = self.pieces
+                    .iter()
+                    .map(|p| {
+                        if !matches!(p.color_type(), crate::types::ColorType::Solid) {
+                            let mut new_piece = p.clone();
+                            let animated_color = p.get_animated_color(frame);
+                            new_piece.set_color_override(&animated_color);
+                            new_piece
+                        } else {
+                            p.clone()
+                        }
+                    })
+                    .collect();
+
+                let svg = generate_svg(w, h, &colored_pieces);
+                if let Ok(tree) = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()) {
+                    if let Some(mut pixmap) = resvg::tiny_skia::Pixmap::new(w, h) {
+                        resvg::render(
+                            &tree,
+                            resvg::tiny_skia::Transform::default(),
+                            &mut pixmap.as_mut(),
+                        );
+                        frames.push(pixmap.data().to_vec());
+                    }
+                }
+            }
+
+            if frames.is_empty() {
+                self.status_message = "Failed to generate APNG frames".to_string();
+                return;
+            }
+
+            if let Ok(file) = File::create(&path) {
+                let mut buf_writer = BufWriter::new(file);
+                let result = {
+                    let mut encoder = png::Encoder::new(&mut buf_writer, w, h);
+                    encoder.set_color(png::ColorType::Rgba);
+                    encoder.set_depth(png::BitDepth::Eight);
+                    encoder.set_animated(num_frames, 0).unwrap();
+                    encoder.set_frame_delay(1, 50).unwrap();
+
+                    match encoder.write_header() {
+                        Ok(mut png_writer) => {
+                            for frame_data in &frames {
+                                let _ = png_writer.write_image_data(frame_data);
+                            }
+                            Ok(())
+                        }
+                        Err(e) => Err(e),
+                    }
+                };
+                match result {
+                    Ok(()) => self.status_message = format!("Saved APNG to {}", path.display()),
+                    Err(e) => self.status_message = format!("APNG encode error: {e}"),
+                }
+            } else {
+                self.status_message = "Failed to create APNG file".to_string();
             }
         }
     }
@@ -259,6 +338,7 @@ impl eframe::App for CrosshairApp {
         let mut do_save_as = false;
         let mut do_export_svg = false;
         let mut do_export_png = false;
+        let mut do_export_apng = false;
         let mut do_set_current: Option<PathBuf> = None;
 
         egui::SidePanel::left("pieces_panel")
@@ -287,6 +367,7 @@ impl eframe::App for CrosshairApp {
                     || do_save_as = true,
                     || do_export_svg = true,
                     || do_export_png = true,
+                    || do_export_apng = true,
                     || self.show_delete_confirm = true,
                     |path| do_set_current = Some(path),
                 );
@@ -312,6 +393,9 @@ impl eframe::App for CrosshairApp {
         }
         if do_export_png {
             self.export_png();
+        }
+        if do_export_apng {
+            self.export_apng();
         }
         if let Some(path) = do_set_current {
             self.open_project(path.clone());

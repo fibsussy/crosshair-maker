@@ -4,6 +4,82 @@ fn default_true() -> bool {
     true
 }
 
+fn default_one() -> f64 { 1.0 }
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum GradientTransition {
+    /// Hard cut back to the start (last→first instant).
+    Loop,
+    /// Reverse direction at each end (ping-pong).
+    Bounce,
+    /// Smooth loop: interpolates last→first like any other segment.
+    SmoothLoop,
+}
+
+impl Default for GradientTransition {
+    fn default() -> Self {
+        GradientTransition::Bounce
+    }
+}
+
+impl std::fmt::Display for GradientTransition {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            GradientTransition::Loop => write!(f, "Loop"),
+            GradientTransition::Bounce => write!(f, "Bounce"),
+            GradientTransition::SmoothLoop => write!(f, "Smooth Loop"),
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ColorType {
+    Solid,
+    Eraser,
+    Rainbow {
+        #[serde(default = "default_one")]
+        saturation: f64,
+        #[serde(default = "default_one")]
+        lightness: f64,
+        #[serde(default = "default_one")]
+        alpha: f64,
+        #[serde(default = "default_one")]
+        speed: f64,
+        #[serde(default)]
+        reverse: bool,
+    },
+    GradientCycle {
+        #[serde(default)]
+        colors: Vec<String>,
+        #[serde(default = "default_one")]
+        speed: f64,
+        #[serde(default)]
+        transition: GradientTransition,
+        /// Legacy field — migrated into `colors` on load.
+        #[serde(default)]
+        color2: Option<String>,
+    },
+}
+
+impl Default for ColorType {
+    fn default() -> Self {
+        ColorType::Solid
+    }
+}
+
+impl ColorType {
+    /// Migrate legacy GradientCycle that only had `color2`.
+    pub fn migrate(&mut self) {
+        if let ColorType::GradientCycle { colors, color2, .. } = self {
+            if let Some(c2) = color2.take() {
+                if colors.is_empty() {
+                    colors.push(c2);
+                }
+            }
+        }
+    }
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum OddAnchor {
     #[default]
@@ -47,6 +123,8 @@ pub enum Piece {
         length: i32,
         thickness: i32,
         color: String,
+        #[serde(default)]
+        color_type: ColorType,
         visible: bool,
         #[serde(default)]
         odd_anchor: OddAnchor,
@@ -57,6 +135,8 @@ pub enum Piece {
         origin: (i32, i32),
         size: u32,
         color: String,
+        #[serde(default)]
+        color_type: ColorType,
         visible: bool,
         #[serde(default)]
         odd_anchor: OddAnchor,
@@ -66,6 +146,8 @@ pub enum Piece {
         vector: (i32, i32),
         thickness: i32,
         color: String,
+        #[serde(default)]
+        color_type: ColorType,
         visible: bool,
         #[serde(default)]
         odd_anchor: OddAnchor,
@@ -76,6 +158,8 @@ pub enum Piece {
         height: u32,
         rotation: f64,
         color: String,
+        #[serde(default)]
+        color_type: ColorType,
         visible: bool,
         #[serde(default)]
         odd_anchor: OddAnchor,
@@ -101,6 +185,8 @@ pub enum Piece {
         origin: (i32, i32),
         size: u32,
         color: String,
+        #[serde(default)]
+        color_type: ColorType,
         visible: bool,
         #[serde(default)]
         odd_anchor: OddAnchor,
@@ -155,6 +241,127 @@ impl Piece {
             Piece::RectPattern { .. } | Piece::CircPattern { .. } => OddAnchor::default(),
         }
     }
+
+    pub fn color_type(&self) -> ColorType {
+        match self {
+            Piece::Cross { color_type, .. }
+            | Piece::Dot { color_type, .. }
+            | Piece::Line { color_type, .. }
+            | Piece::Rectangle { color_type, .. }
+            | Piece::HappyFace { color_type, .. } => color_type.clone(),
+            Piece::RectPattern { obj, .. } | Piece::CircPattern { obj, .. } => obj.color_type(),
+        }
+    }
+
+    pub fn get_animated_color(&self, frame: f64) -> String {
+        let ct = self.color_type();
+        match ct {
+            ColorType::Solid => self.base_color(),
+            ColorType::Eraser => "#00000000".to_string(),
+            ColorType::Rainbow { saturation, lightness, alpha, speed, reverse } => {
+                let dir = if reverse { -1.0 } else { 1.0 };
+                let hue = (frame * speed * dir * 360.0).rem_euclid(360.0);
+                let (r, g, b) = hsv_to_rgb(hue, saturation, lightness);
+                let a = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
+                format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+            }
+            ColorType::GradientCycle { colors, speed, transition, .. } => {
+                if colors.len() < 2 {
+                    return colors.first().cloned().unwrap_or_else(|| "#ffffffff".to_string());
+                }
+                let n = colors.len();
+                let (seg, local_t) = match transition {
+                    GradientTransition::Bounce => {
+                        // Ping-pong: 0→1→2→...→n-1→...→1→0
+                        let segments = n - 1;
+                        let total_len = segments as f64 * 2.0;
+                        let t = (frame * speed) % total_len;
+                        let t = if t > segments as f64 { total_len - t } else { t };
+                        let seg = (t.floor() as usize).min(segments - 1);
+                        (seg, t - seg as f64)
+                    }
+                    GradientTransition::Loop => {
+                        // Hard cut: 0→1→2→...→n-1 → jump to 0
+                        let segments = n - 1;
+                        let t = (frame * speed) % segments as f64;
+                        let seg = (t.floor() as usize).min(segments - 1);
+                        (seg, t - seg as f64)
+                    }
+                    GradientTransition::SmoothLoop => {
+                        // Smooth loop: 0→1→...→n-1→0 (wraps around)
+                        let t = (frame * speed) % n as f64;
+                        let seg = t.floor() as usize % n;
+                        (seg, t - t.floor())
+                    }
+                };
+                let all_colors: Vec<&str> = colors.iter().map(|s| s.as_str()).collect();
+                let c1 = parse_hex_color_rgba(all_colors[seg]);
+                let next = if matches!(transition, GradientTransition::SmoothLoop) {
+                    (seg + 1) % n
+                } else {
+                    (seg + 1).min(n - 1)
+                };
+                let c2 = parse_hex_color_rgba(all_colors[next]);
+                let r = ((c1.0 as f64 * (1.0 - local_t)) + (c2.0 as f64 * local_t)) as u8;
+                let g = ((c1.1 as f64 * (1.0 - local_t)) + (c2.1 as f64 * local_t)) as u8;
+                let b = ((c1.2 as f64 * (1.0 - local_t)) + (c2.2 as f64 * local_t)) as u8;
+                let a = ((c1.3 as f64 * (1.0 - local_t)) + (c2.3 as f64 * local_t)) as u8;
+                format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+            }
+        }
+    }
+
+    fn base_color(&self) -> String {
+        match self {
+            Piece::Cross { color, .. }
+            | Piece::Dot { color, .. }
+            | Piece::Line { color, .. }
+            | Piece::Rectangle { color, .. }
+            | Piece::HappyFace { color, .. } => color.clone(),
+            Piece::RectPattern { obj, .. } | Piece::CircPattern { obj, .. } => obj.base_color(),
+        }
+    }
+
+
+
+    pub fn set_color_override(&mut self, color: &str) {
+        match self {
+            Piece::Cross { color: c, .. }
+            | Piece::Dot { color: c, .. }
+            | Piece::Line { color: c, .. }
+            | Piece::Rectangle { color: c, .. }
+            | Piece::HappyFace { color: c, .. } => *c = color.to_string(),
+            Piece::RectPattern { obj, .. } | Piece::CircPattern { obj, .. } => obj.set_color_override(color),
+        }
+    }
+}
+
+fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
+    let c = v * s;
+    let x = c * (1.0 - ((h / 60.0) % 2.0 - 1.0).abs());
+    let m = v - c;
+    let (r, g, b) = match h as i32 {
+        0..=59 => (c, x, 0.0),
+        60..=119 => (x, c, 0.0),
+        120..=179 => (0.0, c, x),
+        180..=239 => (0.0, x, c),
+        240..=299 => (x, 0.0, c),
+        _ => (c, 0.0, x),
+    };
+    (((r + m) * 255.0) as u8, ((g + m) * 255.0) as u8, ((b + m) * 255.0) as u8)
+}
+
+fn parse_hex_color_rgba(hex: &str) -> (u8, u8, u8, u8) {
+    let hex = hex.trim_start_matches('#');
+    let r = u8::from_str_radix(&hex[0..2], 16).unwrap_or(0);
+    let g = u8::from_str_radix(&hex[2..4], 16).unwrap_or(0);
+    let b = u8::from_str_radix(&hex[4..6], 16).unwrap_or(0);
+    let a = if hex.len() >= 8 {
+        u8::from_str_radix(&hex[6..8], 16).unwrap_or(255)
+    } else {
+        255
+    };
+    (r, g, b, a)
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -184,6 +391,7 @@ impl Default for AppConfig {
 
 pub fn default_pieces() -> Vec<Piece> {
     use Piece::{Cross, Dot, HappyFace, RectPattern};
+    let default_color_type = ColorType::default();
     vec![
         RectPattern {
             origin: (0, -10),
@@ -195,6 +403,7 @@ pub fn default_pieces() -> Vec<Piece> {
                 origin: (0, 0),
                 size: 1,
                 color: "#ff5050ff".to_string(),
+                color_type: default_color_type.clone(),
                 visible: true,
                 odd_anchor: OddAnchor::default(),
             }),
@@ -207,6 +416,7 @@ pub fn default_pieces() -> Vec<Piece> {
             length: 2,
             thickness: 2,
             color: "#00ff7dff".to_string(),
+            color_type: default_color_type.clone(),
             visible: true,
             odd_anchor: OddAnchor::default(),
             lock_gap: true,
@@ -215,6 +425,7 @@ pub fn default_pieces() -> Vec<Piece> {
             origin: (-50, -10),
             size: 3,
             color: "#00ff7dff".to_string(),
+            color_type: default_color_type,
             visible: true,
             odd_anchor: OddAnchor::default(),
         },

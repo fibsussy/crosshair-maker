@@ -3,15 +3,15 @@ use eframe::egui;
 use crate::types::{OddAnchor, Piece};
 
 fn slider_i32(ui: &mut egui::Ui, val: &mut i32, range: std::ops::RangeInclusive<i32>, label: &str) -> bool {
-    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0)).changed()
+    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Never)).changed()
 }
 
 fn slider_u32(ui: &mut egui::Ui, val: &mut u32, range: std::ops::RangeInclusive<u32>, label: &str) -> bool {
-    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0)).changed()
+    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Never)).changed()
 }
 
 fn slider_f64(ui: &mut egui::Ui, val: &mut f64, range: std::ops::RangeInclusive<f64>, label: &str) -> bool {
-    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0)).changed()
+    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Never)).changed()
 }
 
 fn edit_origin(ui: &mut egui::Ui, origin: &mut (i32, i32)) -> bool {
@@ -67,6 +67,7 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
             length,
             thickness,
             color,
+            color_type,
             odd_anchor,
             lock_gap,
             ..
@@ -90,20 +91,25 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
             }
             changed |= slider_i32(ui, length, -200..=200, "Length");
             changed |= slider_i32(ui, thickness, 1..=50, "Thickness");
-            changed |= edit_color(ui, color);
+            ui.separator();
+            changed |= edit_color_section(ui, color, color_type);
+            ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
         Piece::Dot {
             origin,
             size,
             color,
+            color_type,
             odd_anchor,
             ..
         } => {
             ui.label("Dot");
             changed |= edit_origin(ui, origin);
             changed |= slider_u32(ui, size, 1..=100, "Size");
-            changed |= edit_color(ui, color);
+            ui.separator();
+            changed |= edit_color_section(ui, color, color_type);
+            ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
         Piece::Line {
@@ -111,6 +117,7 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
             vector,
             thickness,
             color,
+            color_type,
             odd_anchor,
             ..
         } => {
@@ -123,7 +130,9 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
                 changed |= ui.add(egui::DragValue::new(&mut vector.1).speed(1.0)).changed();
             });
             changed |= slider_i32(ui, thickness, 1..=50, "Thickness");
-            changed |= edit_color(ui, color);
+            ui.separator();
+            changed |= edit_color_section(ui, color, color_type);
+            ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
         Piece::Rectangle {
@@ -132,6 +141,7 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
             height,
             rotation,
             color,
+            color_type,
             odd_anchor,
             ..
         } => {
@@ -140,7 +150,9 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
             changed |= slider_u32(ui, width, 1..=500, "Width");
             changed |= slider_u32(ui, height, 1..=500, "Height");
             changed |= slider_f64(ui, rotation, -360.0..=360.0, "Rotation");
-            changed |= edit_color(ui, color);
+            ui.separator();
+            changed |= edit_color_section(ui, color, color_type);
+            ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
         Piece::RectPattern {
@@ -185,13 +197,16 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
             origin,
             size,
             color,
+            color_type,
             odd_anchor,
             ..
         } => {
             ui.label("HappyFace");
             changed |= edit_origin(ui, origin);
             changed |= slider_u32(ui, size, 1..=100, "Size");
-            changed |= edit_color(ui, color);
+            ui.separator();
+            changed |= edit_color_section(ui, color, color_type);
+            ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
     }
@@ -216,11 +231,13 @@ fn edit_piece_type_selector(ui: &mut egui::Ui, obj: &mut Box<Piece>) -> bool {
 }
 
 fn default_piece_of_type(name: &str) -> Piece {
+    let default_color_type = ColorType::default();
     match name {
         "Dot" => Piece::Dot {
             origin: (0, 0),
             size: 2,
             color: "#ff5050ff".to_string(),
+            color_type: default_color_type.clone(),
             visible: true,
             odd_anchor: OddAnchor::default(),
         },
@@ -229,6 +246,7 @@ fn default_piece_of_type(name: &str) -> Piece {
             vector: (10, 0),
             thickness: 2,
             color: "#ffffffff".to_string(),
+            color_type: default_color_type.clone(),
             visible: true,
             odd_anchor: OddAnchor::default(),
         },
@@ -238,6 +256,7 @@ fn default_piece_of_type(name: &str) -> Piece {
             height: 10,
             rotation: 0.0,
             color: "#ffffffff".to_string(),
+            color_type: default_color_type.clone(),
             visible: true,
             odd_anchor: OddAnchor::default(),
         },
@@ -248,6 +267,7 @@ fn default_piece_of_type(name: &str) -> Piece {
             length: 4,
             thickness: 2,
             color: "#00ff7dff".to_string(),
+            color_type: default_color_type.clone(),
             visible: true,
             odd_anchor: OddAnchor::default(),
             lock_gap: true,
@@ -256,6 +276,7 @@ fn default_piece_of_type(name: &str) -> Piece {
             origin: (0, 0),
             size: 3,
             color: "#00ff7dff".to_string(),
+            color_type: default_color_type.clone(),
             visible: true,
             odd_anchor: OddAnchor::default(),
         },
@@ -263,6 +284,7 @@ fn default_piece_of_type(name: &str) -> Piece {
             origin: (0, 0),
             size: 2,
             color: "#ffffffff".to_string(),
+            color_type: default_color_type,
             visible: true,
             odd_anchor: OddAnchor::default(),
         },
@@ -282,6 +304,173 @@ pub fn edit_color(ui: &mut egui::Ui, color: &mut String) -> bool {
             changed = true;
         }
     });
+    changed
+}
+
+use crate::types::ColorType;
+
+/// Unified color section: color type dropdown, base color (when applicable), and sub-properties.
+fn edit_color_section(ui: &mut egui::Ui, color: &mut String, color_type: &mut ColorType) -> bool {
+    let mut changed = false;
+    changed |= edit_color_type(ui, color_type);
+    // Only Solid gets a color picker
+    if matches!(color_type, ColorType::Solid) {
+        changed |= edit_color(ui, color);
+    }
+    changed
+}
+
+fn slider_f64_fine(ui: &mut egui::Ui, val: &mut f64, range: std::ops::RangeInclusive<f64>, label: &str, step: f64) -> bool {
+    ui.add(egui::Slider::new(val, range).text(label).step_by(step).clamping(egui::SliderClamping::Never)).changed()
+}
+
+pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
+    let mut changed = false;
+
+    let mut selected_idx = match *color_type {
+        ColorType::Solid => 0,
+        ColorType::Eraser => 1,
+        ColorType::Rainbow { .. } => 2,
+        ColorType::GradientCycle { .. } => 3,
+    };
+
+    ui.horizontal(|ui| {
+        ui.label("Color Type");
+        egui::ComboBox::from_id_salt("color_type_selector")
+            .selected_text(match *color_type {
+                ColorType::Solid => "Solid",
+                ColorType::Eraser => "Eraser",
+                ColorType::Rainbow { .. } => "Rainbow",
+                ColorType::GradientCycle { .. } => "Gradient Cycle",
+            })
+            .show_ui(ui, |ui| {
+                if ui.selectable_value(&mut selected_idx, 0, "Solid").clicked() {
+                    *color_type = ColorType::Solid;
+                    changed = true;
+                }
+                if ui.selectable_value(&mut selected_idx, 1, "Eraser").clicked() {
+                    *color_type = ColorType::Eraser;
+                    changed = true;
+                }
+                if ui.selectable_value(&mut selected_idx, 2, "Rainbow").clicked() {
+                    *color_type = ColorType::Rainbow {
+                        saturation: 1.0,
+                        lightness: 1.0,
+                        alpha: 1.0,
+                        speed: 1.0,
+                        reverse: false,
+                    };
+                    changed = true;
+                }
+                if ui.selectable_value(&mut selected_idx, 3, "Gradient Cycle").clicked() {
+                    *color_type = ColorType::GradientCycle {
+                        colors: vec!["#ff0000ff".to_string(), "#0000ffff".to_string()],
+                        speed: 1.0,
+                        transition: crate::types::GradientTransition::default(),
+                        color2: None,
+                    };
+                    changed = true;
+                }
+            });
+    });
+
+    match color_type {
+        ColorType::Rainbow { saturation, lightness, alpha, speed, reverse } => {
+            changed |= slider_f64_fine(ui, saturation, 0.0..=1.0, "Saturation", 0.01);
+            changed |= slider_f64_fine(ui, lightness, 0.0..=1.0, "Lightness", 0.01);
+            changed |= slider_f64_fine(ui, alpha, 0.0..=1.0, "Transparency", 0.01);
+            changed |= slider_f64_fine(ui, speed, 0.1..=10.0, "Speed", 0.1);
+            if ui.checkbox(reverse, "Reverse").changed() {
+                changed = true;
+            }
+        }
+        ColorType::GradientCycle { colors, speed, transition, .. } => {
+            changed |= slider_f64_fine(ui, speed, 0.1..=10.0, "Speed", 0.1);
+            changed |= edit_gradient_transition(ui, transition);
+            ui.label("Gradient Colors:");
+            let num_colors = colors.len();
+            let mut remove_idx: Option<usize> = None;
+            let mut swap: Option<(usize, usize)> = None;
+            for i in 0..num_colors {
+                let mut color_val = colors[i].clone();
+                let mut removed = false;
+                ui.horizontal(|ui| {
+                    // Move up/down buttons
+                    let up_enabled = i > 0;
+                    let down_enabled = i < num_colors - 1;
+                    if ui.add_enabled(up_enabled, egui::Button::new(
+                        egui::RichText::new("▲").size(8.0)).min_size(egui::Vec2::new(14.0, 14.0)).frame(false)
+                    ).clicked() {
+                        swap = Some((i, i - 1));
+                    }
+                    if ui.add_enabled(down_enabled, egui::Button::new(
+                        egui::RichText::new("▼").size(8.0)).min_size(egui::Vec2::new(14.0, 14.0)).frame(false)
+                    ).clicked() {
+                        swap = Some((i, i + 1));
+                    }
+                    if ui.text_edit_singleline(&mut color_val).changed() {
+                        changed = true;
+                    }
+                    let mut c = parse_color(&color_val);
+                    if ui.color_edit_button_srgba(&mut c).changed() {
+                        let [r, g, b, a] = c.to_srgba_unmultiplied();
+                        color_val = format!("#{r:02x}{g:02x}{b:02x}{a:02x}");
+                        changed = true;
+                    }
+                    if num_colors > 1 {
+                        if ui.small_button("X").clicked() {
+                            removed = true;
+                        }
+                    }
+                });
+                if removed {
+                    remove_idx = Some(i);
+                } else {
+                    colors[i] = color_val;
+                }
+            }
+            if let Some((a, b)) = swap {
+                colors.swap(a, b);
+                changed = true;
+            }
+            if let Some(idx) = remove_idx {
+                colors.remove(idx);
+                changed = true;
+            }
+            if ui.small_button("+ Add Color").clicked() {
+                colors.push("#ffffffff".to_string());
+                changed = true;
+            }
+        }
+        _ => {}
+    }
+    changed
+}
+
+fn edit_gradient_transition(ui: &mut egui::Ui, transition: &mut crate::types::GradientTransition) -> bool {
+    use crate::types::GradientTransition;
+    let mut changed = false;
+    let mut idx = match *transition {
+        GradientTransition::Loop => 0,
+        GradientTransition::Bounce => 1,
+        GradientTransition::SmoothLoop => 2,
+    };
+    let prev = idx;
+    egui::ComboBox::from_id_salt("gradient_transition")
+        .selected_text(format!("{transition}"))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut idx, 0, "Loop");
+            ui.selectable_value(&mut idx, 1, "Bounce");
+            ui.selectable_value(&mut idx, 2, "Smooth Loop");
+        });
+    if idx != prev {
+        *transition = match idx {
+            0 => GradientTransition::Loop,
+            1 => GradientTransition::Bounce,
+            _ => GradientTransition::SmoothLoop,
+        };
+        changed = true;
+    }
     changed
 }
 

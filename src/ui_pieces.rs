@@ -1,4 +1,3 @@
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use eframe::egui;
@@ -21,12 +20,13 @@ pub fn render_pieces_panel(
     _show_save_as_dialog: &mut bool,
     new_project_name: &mut String,
     piece_thumbnails: &crate::preview::PieceThumbnailCache,
-    recent_thumbnails: &HashMap<PathBuf, Option<egui::TextureHandle>>,
+    recent_thumbnails: &crate::preview::RecentThumbnailCache,
     mut on_open: impl FnMut(PathBuf),
     mut on_save: impl FnMut(),
     mut on_save_as: impl FnMut(),
     mut on_export_svg: impl FnMut(),
     mut on_export_png: impl FnMut(),
+    mut on_export_apng: impl FnMut(),
     mut on_request_delete: impl FnMut(),
     mut on_set_current: impl FnMut(PathBuf),
 ) {
@@ -65,6 +65,9 @@ pub fn render_pieces_panel(
         if ui.button("Export PNG").clicked() {
             on_export_png();
         }
+        if ui.button("Export APNG").clicked() {
+            on_export_apng();
+        }
     });
 
     if !status_message.is_empty() {
@@ -101,7 +104,7 @@ pub fn render_pieces_panel(
                         .file_stem()
                         .map(|s| s.to_string_lossy().to_string())
                         .unwrap_or_else(|| path.display().to_string());
-                    let is_open = current_file_path.as_ref() == Some(path);
+                    let _is_current = current_file_path.as_ref() == Some(path);
                     let is_active = current_crosshair_path.as_ref() == Some(path);
 
                     ui.horizontal(|ui| {
@@ -121,7 +124,7 @@ pub fn render_pieces_panel(
                         }
 
                         // Thumbnail
-                        if let Some(Some(tex)) = recent_thumbnails.get(path) {
+                        if let Some(tex) = recent_thumbnails.get(path) {
                             let tex_size = tex.size();
                             let aspect = tex_size[0] as f32 / tex_size[1].max(1) as f32;
                             let w = THUMB_DISPLAY * aspect.min(1.0);
@@ -146,8 +149,8 @@ pub fn render_pieces_panel(
                             ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, egui::Color32::from_gray(30));
                         }
 
-                        let btn = ui.selectable_label(is_open, &name);
-                        if btn.clicked() {
+                        let name_label = egui::RichText::new(&name);
+                        if ui.add(egui::Button::new(name_label).frame(false)).clicked() {
                             clicked_path = Some(path.clone());
                         }
                         if ui.small_button("X").clicked() {
@@ -378,6 +381,7 @@ pub fn render_pieces_panel(
     ui.separator();
     ui.heading("Add Piece");
     let da = crate::types::OddAnchor::default();
+    let dc = crate::types::ColorType::default();
     if ui.button("Cross").clicked() {
         pieces.push(crate::types::Piece::Cross {
             origin: (0, 0),
@@ -386,6 +390,7 @@ pub fn render_pieces_panel(
             length: 4,
             thickness: 2,
             color: "#00ff7dff".to_string(),
+            color_type: dc.clone(),
             visible: true,
             odd_anchor: da,
             lock_gap: true,
@@ -398,6 +403,7 @@ pub fn render_pieces_panel(
             origin: (0, 0),
             size: 2,
             color: "#ff5050ff".to_string(),
+            color_type: dc.clone(),
             visible: true,
             odd_anchor: da,
         });
@@ -410,6 +416,7 @@ pub fn render_pieces_panel(
             vector: (10, 0),
             thickness: 2,
             color: "#ffffffff".to_string(),
+            color_type: dc.clone(),
             visible: true,
             odd_anchor: da,
         });
@@ -423,6 +430,7 @@ pub fn render_pieces_panel(
             height: 10,
             rotation: 0.0,
             color: "#ffffffff".to_string(),
+            color_type: dc.clone(),
             visible: true,
             odd_anchor: da,
         });
@@ -434,6 +442,7 @@ pub fn render_pieces_panel(
             origin: (0, 0),
             size: 3,
             color: "#00ff7dff".to_string(),
+            color_type: dc.clone(),
             visible: true,
             odd_anchor: da,
         });
@@ -451,6 +460,7 @@ pub fn render_pieces_panel(
                 origin: (0, 0),
                 size: 2,
                 color: "#ff5050ff".to_string(),
+                color_type: dc.clone(),
                 visible: true,
                 odd_anchor: da,
             }),
@@ -469,6 +479,7 @@ pub fn render_pieces_panel(
                 origin: (0, 0),
                 size: 2,
                 color: "#5050ffff".to_string(),
+                color_type: dc.clone(),
                 visible: true,
                 odd_anchor: da,
             }),
