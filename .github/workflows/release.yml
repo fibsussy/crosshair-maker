@@ -149,7 +149,7 @@ jobs:
           git config user.email "action@github.com"
           git add PKGBUILD .SRCINFO crosshair-maker.install
           git commit -m "Update to v${{ needs.version.outputs.new_version }}" || echo "No changes to commit"
-          git push origin master
+          git push origin master -f
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
       - name: Create release with assets
