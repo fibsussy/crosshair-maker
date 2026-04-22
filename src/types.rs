@@ -6,28 +6,56 @@ fn default_true() -> bool {
 
 fn default_one() -> f64 { 1.0 }
 
+/// Legacy enum kept only for deserializing old project files.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum GradientTransition {
-    /// Hard cut back to the start (last→first instant).
     Loop,
-    /// Reverse direction at each end (ping-pong).
     Bounce,
-    /// Smooth loop: interpolates last→first like any other segment.
     SmoothLoop,
 }
 
-impl Default for GradientTransition {
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum LoopMode {
+    /// Reverse direction at each end (ping-pong).
+    Bounce,
+    /// Cycle through colors in one direction, wrapping around.
+    Cycle,
+}
+
+impl Default for LoopMode {
     fn default() -> Self {
-        GradientTransition::Bounce
+        LoopMode::Bounce
     }
 }
 
-impl std::fmt::Display for GradientTransition {
+impl std::fmt::Display for LoopMode {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            GradientTransition::Loop => write!(f, "Loop"),
-            GradientTransition::Bounce => write!(f, "Bounce"),
-            GradientTransition::SmoothLoop => write!(f, "Smooth Loop"),
+            LoopMode::Bounce => write!(f, "Bounce"),
+            LoopMode::Cycle => write!(f, "Cycle"),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum InterpolationMode {
+    /// Smoothly interpolate between adjacent color stops.
+    Smooth,
+    /// Snap instantly to each color stop (no blending).
+    Instant,
+}
+
+impl Default for InterpolationMode {
+    fn default() -> Self {
+        InterpolationMode::Smooth
+    }
+}
+
+impl std::fmt::Display for InterpolationMode {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            InterpolationMode::Smooth => write!(f, "Smooth"),
+            InterpolationMode::Instant => write!(f, "Instant Cuts"),
         }
     }
 }
@@ -54,7 +82,12 @@ pub enum ColorType {
         #[serde(default = "default_one")]
         speed: f64,
         #[serde(default)]
-        transition: GradientTransition,
+        loop_mode: LoopMode,
+        #[serde(default)]
+        interpolation: InterpolationMode,
+        /// Legacy field — migrated into `loop_mode`/`interpolation` on load.
+        #[serde(default)]
+        transition: Option<GradientTransition>,
         /// Legacy field — migrated into `colors` on load.
         #[serde(default)]
         color2: Option<String>,
@@ -68,12 +101,26 @@ impl Default for ColorType {
 }
 
 impl ColorType {
-    /// Migrate legacy GradientCycle that only had `color2`.
+    /// Migrate legacy fields on load.
     pub fn migrate(&mut self) {
-        if let ColorType::GradientCycle { colors, color2, .. } = self {
+        if let ColorType::GradientCycle { colors, color2, transition, loop_mode, interpolation, .. } = self {
+            // Migrate legacy color2 into colors vec
             if let Some(c2) = color2.take() {
                 if colors.is_empty() {
                     colors.push(c2);
+                }
+            }
+            // Migrate legacy transition enum into loop_mode + interpolation
+            if let Some(t) = transition.take() {
+                match t {
+                    GradientTransition::Bounce => {
+                        *loop_mode = LoopMode::Bounce;
+                        *interpolation = InterpolationMode::Smooth;
+                    }
+                    GradientTransition::Loop | GradientTransition::SmoothLoop => {
+                        *loop_mode = LoopMode::Cycle;
+                        *interpolation = InterpolationMode::Smooth;
+                    }
                 }
             }
         }
@@ -265,13 +312,13 @@ impl Piece {
                 let a = (alpha.clamp(0.0, 1.0) * 255.0) as u8;
                 format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
             }
-            ColorType::GradientCycle { colors, speed, transition, .. } => {
+            ColorType::GradientCycle { colors, speed, loop_mode, interpolation, .. } => {
                 if colors.len() < 2 {
                     return colors.first().cloned().unwrap_or_else(|| "#ffffffff".to_string());
                 }
                 let n = colors.len();
-                let (seg, local_t) = match transition {
-                    GradientTransition::Bounce => {
+                let (seg, local_t) = match loop_mode {
+                    LoopMode::Bounce => {
                         // Ping-pong: 0→1→2→...→n-1→...→1→0
                         let segments = n - 1;
                         let total_len = segments as f64 * 2.0;
@@ -280,33 +327,33 @@ impl Piece {
                         let seg = (t.floor() as usize).min(segments - 1);
                         (seg, t - seg as f64)
                     }
-                    GradientTransition::Loop => {
-                        // Hard cut: 0→1→2→...→n-1 → jump to 0
-                        let segments = n - 1;
-                        let t = (frame * speed) % segments as f64;
-                        let seg = (t.floor() as usize).min(segments - 1);
-                        (seg, t - seg as f64)
-                    }
-                    GradientTransition::SmoothLoop => {
-                        // Smooth loop: 0→1→...→n-1→0 (wraps around)
+                    LoopMode::Cycle => {
+                        // Cycle: 0→1→...→n-1→0 (wraps around)
                         let t = (frame * speed) % n as f64;
                         let seg = t.floor() as usize % n;
                         (seg, t - t.floor())
                     }
                 };
+                let next = match loop_mode {
+                    LoopMode::Bounce => (seg + 1).min(n - 1),
+                    LoopMode::Cycle => (seg + 1) % n,
+                };
                 let all_colors: Vec<&str> = colors.iter().map(|s| s.as_str()).collect();
                 let c1 = parse_hex_color_rgba(all_colors[seg]);
-                let next = if matches!(transition, GradientTransition::SmoothLoop) {
-                    (seg + 1) % n
-                } else {
-                    (seg + 1).min(n - 1)
-                };
-                let c2 = parse_hex_color_rgba(all_colors[next]);
-                let r = ((c1.0 as f64 * (1.0 - local_t)) + (c2.0 as f64 * local_t)) as u8;
-                let g = ((c1.1 as f64 * (1.0 - local_t)) + (c2.1 as f64 * local_t)) as u8;
-                let b = ((c1.2 as f64 * (1.0 - local_t)) + (c2.2 as f64 * local_t)) as u8;
-                let a = ((c1.3 as f64 * (1.0 - local_t)) + (c2.3 as f64 * local_t)) as u8;
-                format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+                match interpolation {
+                    InterpolationMode::Smooth => {
+                        let c2 = parse_hex_color_rgba(all_colors[next]);
+                        let r = ((c1.0 as f64 * (1.0 - local_t)) + (c2.0 as f64 * local_t)) as u8;
+                        let g = ((c1.1 as f64 * (1.0 - local_t)) + (c2.1 as f64 * local_t)) as u8;
+                        let b = ((c1.2 as f64 * (1.0 - local_t)) + (c2.2 as f64 * local_t)) as u8;
+                        let a = ((c1.3 as f64 * (1.0 - local_t)) + (c2.3 as f64 * local_t)) as u8;
+                        format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+                    }
+                    InterpolationMode::Instant => {
+                        // Snap to current color stop, no blending
+                        format!("#{:02x}{:02x}{:02x}{:02x}", c1.0, c1.1, c1.2, c1.3)
+                    }
+                }
             }
         }
     }
@@ -349,6 +396,32 @@ fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
         _ => (c, 0.0, x),
     };
     (((r + m) * 255.0) as u8, ((g + m) * 255.0) as u8, ((b + m) * 255.0) as u8)
+}
+
+/// Compute the duration (in seconds) of one full animation cycle for a piece.
+/// Returns `None` if the piece has no animation.
+pub fn animation_cycle_duration(piece: &Piece) -> Option<f64> {
+    match piece.color_type() {
+        ColorType::Rainbow { speed, .. } => Some(1.0 / speed),
+        ColorType::GradientCycle { colors, speed, loop_mode, .. } => {
+            let n = colors.len();
+            if n < 2 { return None; }
+            let cycle = match loop_mode {
+                LoopMode::Bounce => (n - 1) as f64 * 2.0 / speed,
+                LoopMode::Cycle => n as f64 / speed,
+            };
+            Some(cycle)
+        }
+        _ => None,
+    }
+}
+
+/// Compute the maximum animation cycle duration across all pieces.
+/// Returns 1.0 as a fallback if no animated pieces exist.
+pub fn max_animation_cycle(pieces: &[Piece]) -> f64 {
+    pieces.iter()
+        .filter_map(|p| animation_cycle_duration(p))
+        .fold(1.0_f64, f64::max)
 }
 
 fn parse_hex_color_rgba(hex: &str) -> (u8, u8, u8, u8) {

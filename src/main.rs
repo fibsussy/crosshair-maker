@@ -172,7 +172,6 @@ impl CrosshairApp {
             let (extent_x, extent_y) = infer_extent(&self.pieces);
             let w = (extent_x * 2).max(1) as u32;
             let h = (extent_y * 2).max(1) as u32;
-            let num_frames: u32 = 30;
 
             let has_animation = self.pieces.iter().any(|p| {
                 matches!(
@@ -186,15 +185,26 @@ impl CrosshairApp {
                 return;
             }
 
+            // Compute cycle duration so the APNG covers one full loop
+            let cycle_duration = crate::types::max_animation_cycle(&self.pieces);
+            let export_fps: u32 = 30;
+            let max_frames: u32 = 300;
+            let num_frames: u32 = ((cycle_duration * export_fps as f64).round() as u32)
+                .max(2)
+                .min(max_frames);
+            let frame_delay_secs = cycle_duration / num_frames as f64;
+            let delay_den: u16 = 1000;
+            let delay_num: u16 = ((frame_delay_secs * 1000.0).round() as u16).max(1);
+
             let mut frames: Vec<Vec<u8>> = Vec::new();
             for i in 0..num_frames {
-                let frame = i as f64 / num_frames as f64;
+                let frame_time = i as f64 * frame_delay_secs;
                 let colored_pieces: Vec<crate::types::Piece> = self.pieces
                     .iter()
                     .map(|p| {
                         if !matches!(p.color_type(), crate::types::ColorType::Solid) {
                             let mut new_piece = p.clone();
-                            let animated_color = p.get_animated_color(frame);
+                            let animated_color = p.get_animated_color(frame_time);
                             new_piece.set_color_override(&animated_color);
                             new_piece
                         } else {
@@ -221,14 +231,15 @@ impl CrosshairApp {
                 return;
             }
 
+            let actual_frames = frames.len() as u32;
             if let Ok(file) = File::create(&path) {
                 let mut buf_writer = BufWriter::new(file);
                 let result = {
                     let mut encoder = png::Encoder::new(&mut buf_writer, w, h);
                     encoder.set_color(png::ColorType::Rgba);
                     encoder.set_depth(png::BitDepth::Eight);
-                    encoder.set_animated(num_frames, 0).unwrap();
-                    encoder.set_frame_delay(1, 50).unwrap();
+                    encoder.set_animated(actual_frames, 0).unwrap();
+                    encoder.set_frame_delay(delay_num, delay_den).unwrap();
 
                     match encoder.write_header() {
                         Ok(mut png_writer) => {

@@ -442,20 +442,37 @@ fn save_static_export(json_path: &std::path::Path, pieces: &[Piece], extent_x: i
     let _ = std::fs::remove_file(json_path.with_extension("apng"));
 }
 
+/// Target FPS for APNG export. Frame values use real-time seconds
+/// so the exported animation matches the live preview speed.
+const EXPORT_FPS: u32 = 30;
+/// Maximum frames per APNG to keep file sizes reasonable.
+const EXPORT_MAX_FRAMES: u32 = 300;
+
 fn save_animated_export(json_path: &std::path::Path, pieces: &[Piece], extent_x: i32, extent_y: i32) {
-    let num_frames: u32 = 30;
     let w = extent_x as u32 * 2;
     let h = extent_y as u32 * 2;
+
+    // Compute cycle duration so the APNG covers exactly one full loop
+    let cycle_duration = crate::types::max_animation_cycle(pieces);
+    let num_frames: u32 = ((cycle_duration * EXPORT_FPS as f64).round() as u32)
+        .max(2)
+        .min(EXPORT_MAX_FRAMES);
+    let frame_delay_secs = cycle_duration / num_frames as f64;
+
+    // APNG frame delay as integer ratio: delay_num / delay_den seconds.
+    // Use millisecond precision: delay_num = round(delay_ms), delay_den = 1000.
+    let delay_den: u16 = 1000;
+    let delay_num: u16 = ((frame_delay_secs * 1000.0).round() as u16).max(1);
 
     // Save SVG (static)
     let svg = generate_svg(extent_x.cast_unsigned(), extent_y.cast_unsigned(), pieces);
     let _ = std::fs::write(json_path.with_extension("svg"), &svg);
 
-    // Generate frames
+    // Generate frames with real-time second values
     let mut frames: Vec<Vec<u8>> = Vec::new();
     for i in 0..num_frames {
-        let frame = i as f64 / num_frames as f64;
-        let colored_pieces = apply_color_override(pieces, frame);
+        let frame_time = i as f64 * frame_delay_secs;
+        let colored_pieces = apply_color_override(pieces, frame_time);
         let svg = generate_svg(extent_x.cast_unsigned(), extent_y.cast_unsigned(), &colored_pieces);
 
         if let Ok(tree) = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()) {
@@ -472,14 +489,15 @@ fn save_animated_export(json_path: &std::path::Path, pieces: &[Piece], extent_x:
 
     // Save as APNG
     if !frames.is_empty() {
+        let actual_frames = frames.len() as u32;
         let apng_path = json_path.with_extension("apng");
         if let Ok(file) = File::create(&apng_path) {
             let mut buf_writer = BufWriter::new(file);
             let mut encoder = png::Encoder::new(&mut buf_writer, w, h);
             encoder.set_color(png::ColorType::Rgba);
             encoder.set_depth(png::BitDepth::Eight);
-            encoder.set_animated(num_frames, 0).unwrap();
-            encoder.set_frame_delay(1, 50).unwrap();
+            encoder.set_animated(actual_frames, 0).unwrap();
+            encoder.set_frame_delay(delay_num, delay_den).unwrap();
 
             if let Ok(mut png_writer) = encoder.write_header() {
                 for frame_data in &frames {

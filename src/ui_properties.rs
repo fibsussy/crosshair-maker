@@ -366,7 +366,9 @@ pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
                     *color_type = ColorType::GradientCycle {
                         colors: vec!["#ff0000ff".to_string(), "#0000ffff".to_string()],
                         speed: 1.0,
-                        transition: crate::types::GradientTransition::default(),
+                        loop_mode: crate::types::LoopMode::default(),
+                        interpolation: crate::types::InterpolationMode::default(),
+                        transition: None,
                         color2: None,
                     };
                     changed = true;
@@ -384,9 +386,10 @@ pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
                 changed = true;
             }
         }
-        ColorType::GradientCycle { colors, speed, transition, .. } => {
+        ColorType::GradientCycle { colors, speed, loop_mode, interpolation, .. } => {
             changed |= slider_f64_fine(ui, speed, 0.1..=10.0, "Speed", 0.1);
-            changed |= edit_gradient_transition(ui, transition);
+            changed |= edit_loop_mode(ui, loop_mode);
+            changed |= edit_interpolation_mode(ui, interpolation);
             ui.label("Gradient Colors:");
             let num_colors = colors.len();
             let mut remove_idx: Option<usize> = None;
@@ -447,27 +450,48 @@ pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
     changed
 }
 
-fn edit_gradient_transition(ui: &mut egui::Ui, transition: &mut crate::types::GradientTransition) -> bool {
-    use crate::types::GradientTransition;
+fn edit_loop_mode(ui: &mut egui::Ui, loop_mode: &mut crate::types::LoopMode) -> bool {
+    use crate::types::LoopMode;
     let mut changed = false;
-    let mut idx = match *transition {
-        GradientTransition::Loop => 0,
-        GradientTransition::Bounce => 1,
-        GradientTransition::SmoothLoop => 2,
+    let mut idx = match *loop_mode {
+        LoopMode::Bounce => 0,
+        LoopMode::Cycle => 1,
     };
     let prev = idx;
-    egui::ComboBox::from_id_salt("gradient_transition")
-        .selected_text(format!("{transition}"))
+    egui::ComboBox::from_id_salt("loop_mode")
+        .selected_text(format!("{loop_mode}"))
         .show_ui(ui, |ui| {
-            ui.selectable_value(&mut idx, 0, "Loop");
-            ui.selectable_value(&mut idx, 1, "Bounce");
-            ui.selectable_value(&mut idx, 2, "Smooth Loop");
+            ui.selectable_value(&mut idx, 0, "Bounce");
+            ui.selectable_value(&mut idx, 1, "Cycle");
         });
     if idx != prev {
-        *transition = match idx {
-            0 => GradientTransition::Loop,
-            1 => GradientTransition::Bounce,
-            _ => GradientTransition::SmoothLoop,
+        *loop_mode = match idx {
+            0 => LoopMode::Bounce,
+            _ => LoopMode::Cycle,
+        };
+        changed = true;
+    }
+    changed
+}
+
+fn edit_interpolation_mode(ui: &mut egui::Ui, interpolation: &mut crate::types::InterpolationMode) -> bool {
+    use crate::types::InterpolationMode;
+    let mut changed = false;
+    let mut idx = match *interpolation {
+        InterpolationMode::Smooth => 0,
+        InterpolationMode::Instant => 1,
+    };
+    let prev = idx;
+    egui::ComboBox::from_id_salt("interpolation_mode")
+        .selected_text(format!("{interpolation}"))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut idx, 0, "Smooth");
+            ui.selectable_value(&mut idx, 1, "Instant Cuts");
+        });
+    if idx != prev {
+        *interpolation = match idx {
+            0 => InterpolationMode::Smooth,
+            _ => InterpolationMode::Instant,
         };
         changed = true;
     }
