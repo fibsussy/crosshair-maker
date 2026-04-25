@@ -5,6 +5,24 @@ use std::io::BufWriter;
 use crate::svg_rendering::{generate_svg, infer_bounds, infer_extent};
 use crate::types::Piece;
 
+/// Available background images for the live dynamic effects preview.
+#[derive(Clone, PartialEq)]
+pub enum PreviewBackground {
+    None,
+    CSGO,
+    TheFinals,
+}
+
+impl PreviewBackground {
+    pub fn label(&self) -> &'static str {
+        match self {
+            Self::None => "None",
+            Self::CSGO => "CSGO",
+            Self::TheFinals => "The Finals",
+        }
+    }
+}
+
 pub struct PreviewState {
     preview_image: Option<egui::ColorImage>,
     preview_texture: Option<egui::TextureHandle>,
@@ -13,6 +31,12 @@ pub struct PreviewState {
     override_max: bool,
     /// Animation start time (monotonic).
     animation_start: std::time::Instant,
+    /// Selected background for live preview.
+    pub selected_bg: PreviewBackground,
+    /// Decoded background image (cached).
+    bg_image: Option<(PreviewBackground, image::RgbaImage)>,
+    /// Composite texture (background + crosshair + effects).
+    composite_texture: Option<egui::TextureHandle>,
 }
 
 impl PreviewState {
@@ -24,6 +48,9 @@ impl PreviewState {
             max_preview_size: 1920,
             override_max: false,
             animation_start: std::time::Instant::now(),
+            selected_bg: PreviewBackground::None,
+            bg_image: None,
+            composite_texture: None,
         }
     }
 
@@ -143,6 +170,38 @@ impl PreviewState {
     pub fn set_override_max(&mut self, val: bool) {
         self.override_max = val;
         self.mark_dirty();
+    }
+
+    /// Get or load the selected background image.
+    fn ensure_bg_image(&mut self) -> Option<&image::RgbaImage> {
+        if self.selected_bg == PreviewBackground::None {
+            self.bg_image = None;
+            return None;
+        }
+        // Check if cached bg matches selection
+        if let Some((ref cached_bg, _)) = self.bg_image {
+            if *cached_bg == self.selected_bg {
+                return self.bg_image.as_ref().map(|(_, img)| img);
+            }
+        }
+        // Load the background
+        let bytes: Option<&[u8]> = match self.selected_bg {
+            PreviewBackground::CSGO => {
+                Some(include_bytes!("../assets/preview_backgrounds/csgo.png"))
+            }
+            PreviewBackground::TheFinals => {
+                Some(include_bytes!("../assets/preview_backgrounds/thefinals.png"))
+            }
+            PreviewBackground::None => None,
+        };
+        if let Some(data) = bytes {
+            if let Ok(img) = image::load_from_memory(data) {
+                self.bg_image = Some((self.selected_bg.clone(), img.to_rgba8()));
+                return self.bg_image.as_ref().map(|(_, img)| img);
+            }
+        }
+        self.bg_image = None;
+        None
     }
 }
 
@@ -363,7 +422,7 @@ impl RecentThumbnailCache {
 }
 
 /// Save SVG and PNG/APNG exports alongside a project JSON path.
-pub fn save_exports(json_path: &std::path::Path, pieces: &[Piece]) {
+pub fn save_exports(json_path: &std::path::Path, pieces: &[Piece], effects: &crate::types::DynamicEffects) {
     let (extent_x, extent_y) = infer_extent(pieces);
     if extent_x <= 0 || extent_y <= 0 {
         return;
@@ -382,6 +441,87 @@ pub fn save_exports(json_path: &std::path::Path, pieces: &[Piece]) {
     } else {
         save_static_export(json_path, pieces, extent_x, extent_y);
     }
+
+    // Export dynamic mask + config
+    save_dynamic_export(json_path, pieces, effects, extent_x, extent_y);
+}
+
+fn is_dynamic(piece: &Piece) -> bool {
+    matches!(piece.color_type(), crate::types::ColorType::Dynamic { .. })
+}
+
+/// Save dynamic mask + config file.
+///
+/// Exports:
+/// - `{stem}.dynamic.png` — grayscale binary mask (white where Dynamic pieces are)
+/// - `{stem}.dynamic.cfg` — effect chain configuration (one line per enabled effect)
+///
+/// Cleans up old per-mode mask files from the previous architecture.
+fn save_dynamic_export(
+    json_path: &std::path::Path,
+    pieces: &[Piece],
+    effects: &crate::types::DynamicEffects,
+    extent_x: i32,
+    extent_y: i32,
+) {
+    let stem = json_path.file_stem().unwrap_or_default().to_string_lossy();
+    let mask_path = json_path.with_file_name(format!("{stem}.dynamic.png"));
+    let cfg_path = json_path.with_file_name(format!("{stem}.dynamic.cfg"));
+
+    let has_dyn = pieces.iter().any(|p| is_dynamic(p));
+
+    if !has_dyn || !effects.has_any_enabled() {
+        // Clean up dynamic files
+        let _ = std::fs::remove_file(&mask_path);
+        let _ = std::fs::remove_file(&cfg_path);
+        // Clean up legacy per-mode mask files
+        for tag in crate::types::ALL_LEGACY_MODE_TAGS {
+            let _ = std::fs::remove_file(json_path.with_file_name(format!("{stem}.mask.{tag}.png")));
+        }
+        let _ = std::fs::remove_file(json_path.with_file_name(format!("{stem}.mask.png")));
+        let _ = std::fs::remove_file(json_path.with_file_name(format!("{stem}.mask.apng")));
+        return;
+    }
+
+    let w = extent_x as u32 * 2;
+    let h = extent_y as u32 * 2;
+
+    // Build binary mask: Dynamic pieces = white, everything else = hidden
+    let mask_pieces: Vec<Piece> = pieces.iter().map(|p| {
+        let mut mp = p.clone();
+        if is_dynamic(p) {
+            mp.set_color_override("#ffffffff"); // white = apply effects
+        } else {
+            mp.set_visible(false);
+        }
+        mp
+    }).collect();
+
+    let svg = generate_svg(extent_x.cast_unsigned(), extent_y.cast_unsigned(), &mask_pieces);
+    if let Some(rgba_data) = rasterize_svg(&svg, w, h) {
+        // Convert RGBA to grayscale (take alpha channel as the mask value)
+        let gray: Vec<u8> = rgba_data.chunks(4).map(|px| px[3]).collect();
+        let _ = image::save_buffer(&mask_path, &gray, w, h, image::ColorType::L8);
+    }
+
+    // Write config file
+    let cfg = effects.to_cfg_string();
+    let _ = std::fs::write(&cfg_path, &cfg);
+
+    // Clean up legacy per-mode mask files
+    for tag in crate::types::ALL_LEGACY_MODE_TAGS {
+        let _ = std::fs::remove_file(json_path.with_file_name(format!("{stem}.mask.{tag}.png")));
+    }
+    let _ = std::fs::remove_file(json_path.with_file_name(format!("{stem}.mask.png")));
+    let _ = std::fs::remove_file(json_path.with_file_name(format!("{stem}.mask.apng")));
+}
+
+/// Helper: rasterize an SVG string to RGBA pixel data.
+fn rasterize_svg(svg: &str, w: u32, h: u32) -> Option<Vec<u8>> {
+    let tree = resvg::usvg::Tree::from_str(svg, &resvg::usvg::Options::default()).ok()?;
+    let mut pixmap = resvg::tiny_skia::Pixmap::new(w, h)?;
+    resvg::render(&tree, resvg::tiny_skia::Transform::default(), &mut pixmap.as_mut());
+    Some(pixmap.data().to_vec())
 }
 
 fn has_animated_color(piece: &Piece) -> bool {
@@ -396,10 +536,25 @@ fn needs_color_override(piece: &Piece) -> bool {
 }
 
 fn apply_color_override(pieces: &[Piece], frame: f64) -> Vec<Piece> {
+    apply_color_override_inner(pieces, frame, false)
+}
+
+/// Like `apply_color_override` but for export: ContrastInvert pieces
+/// are rendered as transparent so they don't appear in the main image.
+fn apply_color_override_for_export(pieces: &[Piece], frame: f64) -> Vec<Piece> {
+    apply_color_override_inner(pieces, frame, true)
+}
+
+fn apply_color_override_inner(pieces: &[Piece], frame: f64, export_mode: bool) -> Vec<Piece> {
     pieces
         .iter()
         .map(|p| {
-            if needs_color_override(p) {
+            if export_mode && is_dynamic(p) {
+                // In export mode, Dynamic → transparent (handled by mask)
+                let mut new_piece = p.clone();
+                new_piece.set_color_override("#00000000");
+                new_piece
+            } else if needs_color_override(p) {
                 let mut new_piece = p.clone();
                 let animated_color = p.get_animated_color(frame);
                 new_piece.set_color_override(&animated_color);
@@ -412,8 +567,8 @@ fn apply_color_override(pieces: &[Piece], frame: f64) -> Vec<Piece> {
 }
 
 fn save_static_export(json_path: &std::path::Path, pieces: &[Piece], extent_x: i32, extent_y: i32) {
-    // Apply non-Solid overrides (e.g. Eraser → transparent)
-    let effective = apply_color_override(pieces, 0.0);
+    // Apply non-Solid overrides (e.g. Eraser → transparent, ContrastInvert → transparent)
+    let effective = apply_color_override_for_export(pieces, 0.0);
     let svg = generate_svg(extent_x.cast_unsigned(), extent_y.cast_unsigned(), &effective);
     let _ = std::fs::write(json_path.with_extension("svg"), &svg);
 
@@ -472,7 +627,7 @@ fn save_animated_export(json_path: &std::path::Path, pieces: &[Piece], extent_x:
     let mut frames: Vec<Vec<u8>> = Vec::new();
     for i in 0..num_frames {
         let frame_time = i as f64 * frame_delay_secs;
-        let colored_pieces = apply_color_override(pieces, frame_time);
+        let colored_pieces = apply_color_override_for_export(pieces, frame_time);
         let svg = generate_svg(extent_x.cast_unsigned(), extent_y.cast_unsigned(), &colored_pieces);
 
         if let Ok(tree) = resvg::usvg::Tree::from_str(&svg, &resvg::usvg::Options::default()) {
@@ -513,7 +668,13 @@ fn save_animated_export(json_path: &std::path::Path, pieces: &[Piece], extent_x:
 
 // ── preview panel ───────────────────────────────────────────────────
 
-pub fn render_preview_panel(ui: &mut egui::Ui, ctx: &egui::Context, preview: &mut PreviewState, pieces: &[Piece]) {
+pub fn render_preview_panel(
+    ui: &mut egui::Ui,
+    ctx: &egui::Context,
+    preview: &mut PreviewState,
+    pieces: &[Piece],
+    effects: &crate::types::DynamicEffects,
+) {
     let (extent_x, extent_y) = infer_extent(pieces);
     let width = extent_x.cast_unsigned() * 2;
     let height = extent_y.cast_unsigned() * 2;
@@ -521,6 +682,7 @@ pub fn render_preview_panel(ui: &mut egui::Ui, ctx: &egui::Context, preview: &mu
     let max_size = preview.max_preview_size() * 2;
     let is_capped = !preview.override_max() && (width > max_size || height > max_size);
 
+    // Top controls row
     ui.horizontal(|ui| {
         ui.label(format!("Size: {width}x{height}"));
         if is_capped {
@@ -530,46 +692,228 @@ pub fn render_preview_panel(ui: &mut egui::Ui, ctx: &egui::Context, preview: &mu
                 preview.set_override_max(ov);
             }
         }
+        ui.separator();
+        ui.label("Background:");
+        let bg_label = preview.selected_bg.label();
+        egui::ComboBox::from_id_salt("preview_bg")
+            .selected_text(bg_label)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(preview.selected_bg == PreviewBackground::None, "None").clicked() {
+                    preview.selected_bg = PreviewBackground::None;
+                    preview.mark_dirty();
+                }
+                if ui.selectable_label(preview.selected_bg == PreviewBackground::CSGO, "CSGO").clicked() {
+                    preview.selected_bg = PreviewBackground::CSGO;
+                    preview.mark_dirty();
+                }
+                if ui.selectable_label(preview.selected_bg == PreviewBackground::TheFinals, "The Finals").clicked() {
+                    preview.selected_bg = PreviewBackground::TheFinals;
+                    preview.mark_dirty();
+                }
+            });
     });
 
     let available_size = ui.available_size();
+    let has_bg = preview.selected_bg != PreviewBackground::None;
+    let has_dynamic = pieces.iter().any(|p| is_dynamic(p));
 
-    if let Some(texture) = preview.texture(ctx, pieces) {
-        let tex_size = texture.size();
-        let aspect = tex_size[0] as f32 / tex_size[1] as f32;
-        let avail_w = available_size.x;
-        let avail_h = available_size.y;
-        let (img_w, img_h) = if avail_w / avail_h > aspect {
-            (avail_h * aspect, avail_h)
+    if has_bg {
+        // Live compositing mode: background + crosshair + dynamic effects
+        ctx.request_repaint(); // Always repaint for mouse tracking
+
+        // Get the crosshair texture for overlay
+        let _crosshair_tex = preview.texture(ctx, pieces);
+
+        // Allocate the preview rect
+        let (rect, response) = ui.allocate_exact_size(available_size, egui::Sense::hover());
+        let mouse_in_rect = response.hovered();
+        let mouse_pos = response.hover_pos();
+
+        // Hide cursor when hovering
+        if mouse_in_rect {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::None);
+        }
+
+        // Get background image dimensions
+        let bg_img = preview.ensure_bg_image().cloned();
+        if let Some(bg) = bg_img {
+            let bg_w = bg.width();
+            let bg_h = bg.height();
+
+            // Compute composite: background centered, crosshair at mouse or center
+            let composite_w = rect.width() as u32;
+            let composite_h = rect.height() as u32;
+            if composite_w > 0 && composite_h > 0 {
+                // Background offset (centered)
+                let bg_ox = (composite_w as i32 - bg_w as i32) / 2;
+                let bg_oy = (composite_h as i32 - bg_h as i32) / 2;
+
+                // Crosshair position (center of crosshair at mouse or at center of rect)
+                let ch_w = width;
+                let ch_h = height;
+                let (ch_cx, ch_cy) = if let Some(mpos) = mouse_pos {
+                    let local = mpos - rect.min;
+                    (local.x as i32, local.y as i32)
+                } else {
+                    (composite_w as i32 / 2, composite_h as i32 / 2)
+                };
+                let ch_ox = ch_cx - ch_w as i32 / 2;
+                let ch_oy = ch_cy - ch_h as i32 / 2;
+
+                let frame = preview.animation_frame();
+                let ext_x = extent_x.cast_unsigned().min(preview.max_preview_size());
+                let ext_y = extent_y.cast_unsigned().min(preview.max_preview_size());
+                let raster_w = ch_w.min(max_size);
+                let raster_h = ch_h.min(max_size);
+
+                // Rasterize crosshair for export (dynamic → transparent, keeps piece order)
+                // This is the same image krosshair draws: normal pieces visible,
+                // transparent holes where dynamic pieces are.
+                let crosshair_rgba = {
+                    let eff = apply_color_override_for_export(pieces, frame);
+                    let svg = generate_svg(ext_x, ext_y, &eff);
+                    rasterize_svg(&svg, raster_w, raster_h)
+                };
+
+                // Rasterize binary mask (dynamic pieces = white, rest hidden)
+                let mask_rgba = if has_dynamic && effects.has_any_enabled() {
+                    let mask_pieces: Vec<Piece> = pieces.iter().map(|p| {
+                        let mut mp = p.clone();
+                        if is_dynamic(p) {
+                            mp.set_color_override("#ffffffff");
+                        } else {
+                            mp.set_visible(false);
+                        }
+                        mp
+                    }).collect();
+                    let svg = generate_svg(ext_x, ext_y, &mask_pieces);
+                    rasterize_svg(&svg, raster_w, raster_h)
+                } else {
+                    None
+                };
+
+                let actual_ch_w = raster_w;
+                let actual_ch_h = raster_h;
+
+                // Build composite: background → dynamic effects → crosshair overlay
+                // This mirrors what krosshair does at runtime:
+                //   1. Game renders (background)
+                //   2. Dynamic shader draws where mask is white (reads game pixels, applies effects)
+                //   3. Crosshair image alpha-blends on top (transparent where dynamic pieces are)
+                let mut pixels = vec![0u8; (composite_w * composite_h * 4) as usize];
+                for y in 0..composite_h {
+                    for x in 0..composite_w {
+                        let pi = ((y * composite_w + x) * 4) as usize;
+
+                        // 1. Background pixel
+                        let bx = x as i32 - bg_ox;
+                        let by = y as i32 - bg_oy;
+                        let (mut pr, mut pg, mut pb) = if bx >= 0 && by >= 0 && bx < bg_w as i32 && by < bg_h as i32 {
+                            let px = bg.get_pixel(bx as u32, by as u32);
+                            (px[0], px[1], px[2])
+                        } else {
+                            (20u8, 20u8, 20u8)
+                        };
+
+                        // Check if this pixel falls within the crosshair bounds
+                        let cx = x as i32 - ch_ox;
+                        let cy = y as i32 - ch_oy;
+                        if cx >= 0 && cy >= 0 && cx < actual_ch_w as i32 && cy < actual_ch_h as i32 {
+                            let ci = ((cy as u32 * actual_ch_w + cx as u32) * 4) as usize;
+
+                            // 2. Dynamic effects (where mask is white, transform bg pixel)
+                            if let Some(ref mask) = mask_rgba {
+                                if ci + 3 < mask.len() && mask[ci + 3] > 127 {
+                                    let (er, eg, eb) = effects.apply_to_pixel(
+                                        pr as f32 / 255.0,
+                                        pg as f32 / 255.0,
+                                        pb as f32 / 255.0,
+                                    );
+                                    pr = (er * 255.0).clamp(0.0, 255.0) as u8;
+                                    pg = (eg * 255.0).clamp(0.0, 255.0) as u8;
+                                    pb = (eb * 255.0).clamp(0.0, 255.0) as u8;
+                                }
+                            }
+
+                            // 3. Crosshair overlay (alpha-blend; dynamic areas are transparent
+                            //    in this image so they won't overwrite the effect above)
+                            if let Some(ref ch) = crosshair_rgba {
+                                if ci + 3 < ch.len() {
+                                    let ca = ch[ci + 3] as f32 / 255.0;
+                                    if ca > 0.001 {
+                                        // resvg outputs premultiplied alpha
+                                        let sr = ch[ci] as f32 / 255.0;
+                                        let sg = ch[ci + 1] as f32 / 255.0;
+                                        let sb = ch[ci + 2] as f32 / 255.0;
+                                        pr = ((sr + pr as f32 / 255.0 * (1.0 - ca)) * 255.0).clamp(0.0, 255.0) as u8;
+                                        pg = ((sg + pg as f32 / 255.0 * (1.0 - ca)) * 255.0).clamp(0.0, 255.0) as u8;
+                                        pb = ((sb + pb as f32 / 255.0 * (1.0 - ca)) * 255.0).clamp(0.0, 255.0) as u8;
+                                    }
+                                }
+                            }
+                        }
+
+                        pixels[pi] = pr;
+                        pixels[pi + 1] = pg;
+                        pixels[pi + 2] = pb;
+                        pixels[pi + 3] = 255;
+                    }
+                }
+
+                let image = egui::ColorImage::from_rgba_unmultiplied(
+                    [composite_w as usize, composite_h as usize],
+                    &pixels,
+                );
+
+                // Upload composite texture
+                let tex = match &mut preview.composite_texture {
+                    Some(tex) if tex.size() == image.size => {
+                        tex.set_partial([0, 0], image, egui::TextureOptions::NEAREST);
+                        tex.clone()
+                    }
+                    _ => {
+                        let tex = ctx.load_texture("preview_composite", image, egui::TextureOptions::NEAREST);
+                        preview.composite_texture = Some(tex.clone());
+                        tex
+                    }
+                };
+
+                ui.painter().image(
+                    tex.id(),
+                    rect,
+                    egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                    egui::Color32::WHITE,
+                );
+            }
         } else {
-            (avail_w, avail_w / aspect)
-        };
-        let img_size = egui::Vec2::new(img_w, img_h);
-        let (rect, _response) = ui.allocate_exact_size(img_size, egui::Sense::hover());
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::ZERO,
-            egui::Color32::from_gray(20),
-        );
-        ui.painter().image(
-            texture.id(),
-            rect,
-            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-            egui::Color32::WHITE,
-        );
+            // Background selected but failed to load
+            ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, egui::Color32::from_gray(20));
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Background failed to load", egui::FontId::default(), egui::Color32::GRAY);
+        }
     } else {
-        let (rect, _) = ui.allocate_exact_size(available_size, egui::Sense::hover());
-        ui.painter().rect_filled(
-            rect,
-            egui::CornerRadius::ZERO,
-            egui::Color32::from_gray(20),
-        );
-        ui.painter().text(
-            rect.center(),
-            egui::Align2::CENTER_CENTER,
-            "No preview available",
-            egui::FontId::default(),
-            egui::Color32::GRAY,
-        );
+        // No background — original simple preview
+        if let Some(texture) = preview.texture(ctx, pieces) {
+            let tex_size = texture.size();
+            let aspect = tex_size[0] as f32 / tex_size[1] as f32;
+            let avail_w = available_size.x;
+            let avail_h = available_size.y;
+            let (img_w, img_h) = if avail_w / avail_h > aspect {
+                (avail_h * aspect, avail_h)
+            } else {
+                (avail_w, avail_w / aspect)
+            };
+            let img_size = egui::Vec2::new(img_w, img_h);
+            let (rect, _response) = ui.allocate_exact_size(img_size, egui::Sense::hover());
+            ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, egui::Color32::from_gray(20));
+            ui.painter().image(
+                texture.id(), rect,
+                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                egui::Color32::WHITE,
+            );
+        } else {
+            let (rect, _) = ui.allocate_exact_size(available_size, egui::Sense::hover());
+            ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, egui::Color32::from_gray(20));
+            ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "No preview available", egui::FontId::default(), egui::Color32::GRAY);
+        }
     }
 }

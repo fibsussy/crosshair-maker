@@ -1,6 +1,6 @@
 use eframe::egui;
 
-use crate::types::{OddAnchor, Piece};
+use crate::types::{OddAnchor, Piece, DynamicEffects};
 
 fn slider_i32(ui: &mut egui::Ui, val: &mut i32, range: std::ops::RangeInclusive<i32>, label: &str) -> bool {
     ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Never)).changed()
@@ -12,6 +12,10 @@ fn slider_u32(ui: &mut egui::Ui, val: &mut u32, range: std::ops::RangeInclusive<
 
 fn slider_f64(ui: &mut egui::Ui, val: &mut f64, range: std::ops::RangeInclusive<f64>, label: &str) -> bool {
     ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Never)).changed()
+}
+
+fn slider_f64_fine(ui: &mut egui::Ui, val: &mut f64, range: std::ops::RangeInclusive<f64>, label: &str, step: f64) -> bool {
+    ui.add(egui::Slider::new(val, range).text(label).step_by(step).clamping(egui::SliderClamping::Never)).changed()
 }
 
 fn edit_origin(ui: &mut egui::Ui, origin: &mut (i32, i32)) -> bool {
@@ -57,27 +61,17 @@ fn edit_odd_anchor(ui: &mut egui::Ui, anchor: &mut OddAnchor) -> bool {
     }
 }
 
-pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
+pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece, effects: &mut DynamicEffects) -> bool {
     let mut changed = false;
     match piece {
         Piece::Cross {
-            origin,
-            h_gap,
-            v_gap,
-            length,
-            thickness,
-            color,
-            color_type,
-            odd_anchor,
-            lock_gap,
-            ..
+            origin, h_gap, v_gap, length, thickness,
+            color, color_type, odd_anchor, lock_gap, ..
         } => {
             ui.label("Cross");
             changed |= edit_origin(ui, origin);
             if ui.checkbox(lock_gap, "Lock Axis").changed() {
-                if *lock_gap {
-                    *v_gap = *h_gap;
-                }
+                if *lock_gap { *v_gap = *h_gap; }
                 changed = true;
             }
             if *lock_gap {
@@ -92,35 +86,20 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
             changed |= slider_i32(ui, length, -200..=200, "Length");
             changed |= slider_i32(ui, thickness, 1..=50, "Thickness");
             ui.separator();
-            changed |= edit_color_section(ui, color, color_type);
+            changed |= edit_color_section(ui, color, color_type, effects);
             ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
-        Piece::Dot {
-            origin,
-            size,
-            color,
-            color_type,
-            odd_anchor,
-            ..
-        } => {
+        Piece::Dot { origin, size, color, color_type, odd_anchor, .. } => {
             ui.label("Dot");
             changed |= edit_origin(ui, origin);
             changed |= slider_u32(ui, size, 1..=100, "Size");
             ui.separator();
-            changed |= edit_color_section(ui, color, color_type);
+            changed |= edit_color_section(ui, color, color_type, effects);
             ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
-        Piece::Line {
-            origin,
-            vector,
-            thickness,
-            color,
-            color_type,
-            odd_anchor,
-            ..
-        } => {
+        Piece::Line { origin, vector, thickness, color, color_type, odd_anchor, .. } => {
             ui.label("Line");
             changed |= edit_origin(ui, origin);
             ui.horizontal(|ui| {
@@ -131,39 +110,22 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
             });
             changed |= slider_i32(ui, thickness, 1..=50, "Thickness");
             ui.separator();
-            changed |= edit_color_section(ui, color, color_type);
+            changed |= edit_color_section(ui, color, color_type, effects);
             ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
-        Piece::Rectangle {
-            origin,
-            width,
-            height,
-            rotation,
-            color,
-            color_type,
-            odd_anchor,
-            ..
-        } => {
+        Piece::Rectangle { origin, width, height, rotation, color, color_type, odd_anchor, .. } => {
             ui.label("Rectangle");
             changed |= edit_origin(ui, origin);
             changed |= slider_u32(ui, width, 1..=500, "Width");
             changed |= slider_u32(ui, height, 1..=500, "Height");
             changed |= slider_f64(ui, rotation, -360.0..=360.0, "Rotation");
             ui.separator();
-            changed |= edit_color_section(ui, color, color_type);
+            changed |= edit_color_section(ui, color, color_type, effects);
             ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
-        Piece::RectPattern {
-            origin,
-            x_distance,
-            x_quantity,
-            y_distance,
-            y_quantity,
-            obj,
-            ..
-        } => {
+        Piece::RectPattern { origin, x_distance, x_quantity, y_distance, y_quantity, obj, .. } => {
             ui.label("RectPattern");
             changed |= edit_origin(ui, origin);
             changed |= slider_i32(ui, x_distance, -200..=200, "X Distance");
@@ -173,16 +135,9 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
             ui.separator();
             ui.label("Inner piece:");
             changed |= edit_piece_type_selector(ui, obj);
-            changed |= edit_piece(ui, obj);
+            changed |= edit_piece(ui, obj, effects);
         }
-        Piece::CircPattern {
-            origin,
-            radius,
-            quantity,
-            start_deg,
-            obj,
-            ..
-        } => {
+        Piece::CircPattern { origin, radius, quantity, start_deg, obj, .. } => {
             ui.label("CircPattern");
             changed |= edit_origin(ui, origin);
             changed |= slider_i32(ui, radius, 1..=500, "Radius");
@@ -191,21 +146,14 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece) -> bool {
             ui.separator();
             ui.label("Inner piece:");
             changed |= edit_piece_type_selector(ui, obj);
-            changed |= edit_piece(ui, obj);
+            changed |= edit_piece(ui, obj, effects);
         }
-        Piece::HappyFace {
-            origin,
-            size,
-            color,
-            color_type,
-            odd_anchor,
-            ..
-        } => {
+        Piece::HappyFace { origin, size, color, color_type, odd_anchor, .. } => {
             ui.label("HappyFace");
             changed |= edit_origin(ui, origin);
             changed |= slider_u32(ui, size, 1..=100, "Size");
             ui.separator();
-            changed |= edit_color_section(ui, color, color_type);
+            changed |= edit_color_section(ui, color, color_type, effects);
             ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
@@ -231,62 +179,33 @@ fn edit_piece_type_selector(ui: &mut egui::Ui, obj: &mut Box<Piece>) -> bool {
 }
 
 fn default_piece_of_type(name: &str) -> Piece {
+    use crate::types::ColorType;
     let default_color_type = ColorType::default();
     match name {
         "Dot" => Piece::Dot {
-            origin: (0, 0),
-            size: 2,
-            color: "#ff5050ff".to_string(),
-            color_type: default_color_type.clone(),
-            visible: true,
-            odd_anchor: OddAnchor::default(),
+            origin: (0, 0), size: 2, color: "#ff5050ff".to_string(),
+            color_type: default_color_type, visible: true, odd_anchor: OddAnchor::default(),
         },
         "Line" => Piece::Line {
-            origin: (0, 0),
-            vector: (10, 0),
-            thickness: 2,
-            color: "#ffffffff".to_string(),
-            color_type: default_color_type.clone(),
-            visible: true,
-            odd_anchor: OddAnchor::default(),
+            origin: (0, 0), vector: (10, 0), thickness: 2, color: "#ffffffff".to_string(),
+            color_type: default_color_type, visible: true, odd_anchor: OddAnchor::default(),
         },
         "Rectangle" => Piece::Rectangle {
-            origin: (0, 0),
-            width: 10,
-            height: 10,
-            rotation: 0.0,
-            color: "#ffffffff".to_string(),
-            color_type: default_color_type.clone(),
-            visible: true,
-            odd_anchor: OddAnchor::default(),
+            origin: (0, 0), width: 10, height: 10, rotation: 0.0, color: "#ffffffff".to_string(),
+            color_type: default_color_type, visible: true, odd_anchor: OddAnchor::default(),
         },
         "Cross" => Piece::Cross {
-            origin: (0, 0),
-            h_gap: 2,
-            v_gap: 2,
-            length: 4,
-            thickness: 2,
-            color: "#00ff7dff".to_string(),
-            color_type: default_color_type.clone(),
-            visible: true,
-            odd_anchor: OddAnchor::default(),
-            lock_gap: true,
+            origin: (0, 0), h_gap: 2, v_gap: 2, length: 4, thickness: 2,
+            color: "#00ff7dff".to_string(), color_type: default_color_type,
+            visible: true, odd_anchor: OddAnchor::default(), lock_gap: true,
         },
         "HappyFace" => Piece::HappyFace {
-            origin: (0, 0),
-            size: 3,
-            color: "#00ff7dff".to_string(),
-            color_type: default_color_type.clone(),
-            visible: true,
-            odd_anchor: OddAnchor::default(),
+            origin: (0, 0), size: 3, color: "#00ff7dff".to_string(),
+            color_type: default_color_type, visible: true, odd_anchor: OddAnchor::default(),
         },
         _ => Piece::Dot {
-            origin: (0, 0),
-            size: 2,
-            color: "#ffffffff".to_string(),
-            color_type: default_color_type,
-            visible: true,
-            odd_anchor: OddAnchor::default(),
+            origin: (0, 0), size: 2, color: "#ffffffff".to_string(),
+            color_type: default_color_type, visible: true, odd_anchor: OddAnchor::default(),
         },
     }
 }
@@ -296,7 +215,6 @@ pub fn edit_color(ui: &mut egui::Ui, color: &mut String) -> bool {
     ui.horizontal(|ui| {
         ui.label("Color");
         changed |= ui.text_edit_singleline(color).changed();
-
         let mut c = parse_color(color);
         if ui.color_edit_button_srgba(&mut c).changed() {
             let [r, g, b, a] = c.to_srgba_unmultiplied();
@@ -310,21 +228,16 @@ pub fn edit_color(ui: &mut egui::Ui, color: &mut String) -> bool {
 use crate::types::ColorType;
 
 /// Unified color section: color type dropdown, base color (when applicable), and sub-properties.
-fn edit_color_section(ui: &mut egui::Ui, color: &mut String, color_type: &mut ColorType) -> bool {
+fn edit_color_section(ui: &mut egui::Ui, color: &mut String, color_type: &mut ColorType, effects: &mut DynamicEffects) -> bool {
     let mut changed = false;
-    changed |= edit_color_type(ui, color_type);
-    // Only Solid gets a color picker
+    changed |= edit_color_type(ui, color_type, effects);
     if matches!(color_type, ColorType::Solid) {
         changed |= edit_color(ui, color);
     }
     changed
 }
 
-fn slider_f64_fine(ui: &mut egui::Ui, val: &mut f64, range: std::ops::RangeInclusive<f64>, label: &str, step: f64) -> bool {
-    ui.add(egui::Slider::new(val, range).text(label).step_by(step).clamping(egui::SliderClamping::Never)).changed()
-}
-
-pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
+pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType, effects: &mut DynamicEffects) -> bool {
     let mut changed = false;
 
     let mut selected_idx = match *color_type {
@@ -332,6 +245,7 @@ pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
         ColorType::Eraser => 1,
         ColorType::Rainbow { .. } => 2,
         ColorType::GradientCycle { .. } => 3,
+        ColorType::Dynamic { .. } => 4,
     };
 
     ui.horizontal(|ui| {
@@ -342,6 +256,7 @@ pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
                 ColorType::Eraser => "Eraser",
                 ColorType::Rainbow { .. } => "Rainbow",
                 ColorType::GradientCycle { .. } => "Gradient Cycle",
+                ColorType::Dynamic { .. } => "Dynamic",
             })
             .show_ui(ui, |ui| {
                 if ui.selectable_value(&mut selected_idx, 0, "Solid").clicked() {
@@ -354,11 +269,7 @@ pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
                 }
                 if ui.selectable_value(&mut selected_idx, 2, "Rainbow").clicked() {
                     *color_type = ColorType::Rainbow {
-                        saturation: 1.0,
-                        lightness: 1.0,
-                        alpha: 1.0,
-                        speed: 1.0,
-                        reverse: false,
+                        saturation: 1.0, lightness: 1.0, alpha: 1.0, speed: 1.0, reverse: false,
                     };
                     changed = true;
                 }
@@ -370,6 +281,15 @@ pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
                         interpolation: crate::types::InterpolationMode::default(),
                         transition: None,
                         color2: None,
+                    };
+                    changed = true;
+                }
+                if ui.selectable_value(&mut selected_idx, 4, "Dynamic").clicked() {
+                    *color_type = ColorType::Dynamic {
+                        _legacy_mode: None,
+                        _legacy_modes: None,
+                        _legacy_tint: None,
+                        _legacy_strength: None,
                     };
                     changed = true;
                 }
@@ -398,7 +318,6 @@ pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
                 let mut color_val = colors[i].clone();
                 let mut removed = false;
                 ui.horizontal(|ui| {
-                    // Move up/down buttons
                     let up_enabled = i > 0;
                     let down_enabled = i < num_colors - 1;
                     if ui.add_enabled(up_enabled, egui::Button::new(
@@ -445,6 +364,13 @@ pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
                 changed = true;
             }
         }
+        ColorType::Dynamic { .. } => {
+            ui.separator();
+            ui.label("Dynamic Effects");
+            ui.small("Effects applied in fixed order where this piece is drawn.");
+            ui.separator();
+            changed |= edit_dynamic_effects(ui, effects);
+        }
         _ => {}
     }
     changed
@@ -453,10 +379,7 @@ pub fn edit_color_type(ui: &mut egui::Ui, color_type: &mut ColorType) -> bool {
 fn edit_loop_mode(ui: &mut egui::Ui, loop_mode: &mut crate::types::LoopMode) -> bool {
     use crate::types::LoopMode;
     let mut changed = false;
-    let mut idx = match *loop_mode {
-        LoopMode::Bounce => 0,
-        LoopMode::Cycle => 1,
-    };
+    let mut idx = match *loop_mode { LoopMode::Bounce => 0, LoopMode::Cycle => 1, };
     let prev = idx;
     egui::ComboBox::from_id_salt("loop_mode")
         .selected_text(format!("{loop_mode}"))
@@ -465,10 +388,7 @@ fn edit_loop_mode(ui: &mut egui::Ui, loop_mode: &mut crate::types::LoopMode) -> 
             ui.selectable_value(&mut idx, 1, "Cycle");
         });
     if idx != prev {
-        *loop_mode = match idx {
-            0 => LoopMode::Bounce,
-            _ => LoopMode::Cycle,
-        };
+        *loop_mode = match idx { 0 => LoopMode::Bounce, _ => LoopMode::Cycle, };
         changed = true;
     }
     changed
@@ -477,10 +397,7 @@ fn edit_loop_mode(ui: &mut egui::Ui, loop_mode: &mut crate::types::LoopMode) -> 
 fn edit_interpolation_mode(ui: &mut egui::Ui, interpolation: &mut crate::types::InterpolationMode) -> bool {
     use crate::types::InterpolationMode;
     let mut changed = false;
-    let mut idx = match *interpolation {
-        InterpolationMode::Smooth => 0,
-        InterpolationMode::Instant => 1,
-    };
+    let mut idx = match *interpolation { InterpolationMode::Smooth => 0, InterpolationMode::Instant => 1, };
     let prev = idx;
     egui::ComboBox::from_id_salt("interpolation_mode")
         .selected_text(format!("{interpolation}"))
@@ -489,12 +406,80 @@ fn edit_interpolation_mode(ui: &mut egui::Ui, interpolation: &mut crate::types::
             ui.selectable_value(&mut idx, 1, "Instant Cuts");
         });
     if idx != prev {
-        *interpolation = match idx {
-            0 => InterpolationMode::Smooth,
-            _ => InterpolationMode::Instant,
-        };
+        *interpolation = match idx { 0 => InterpolationMode::Smooth, _ => InterpolationMode::Instant, };
         changed = true;
     }
+    changed
+}
+
+// ── Dynamic Effects Panel (project-level) ───────────────────────
+
+/// Render the dynamic effects panel (fixed order).  Returns true if anything changed.
+pub fn edit_dynamic_effects(ui: &mut egui::Ui, effects: &mut DynamicEffects) -> bool {
+    let mut changed = false;
+
+    // Invert
+    if ui.checkbox(&mut effects.invert.enabled, "Invert").changed() { changed = true; }
+    if effects.invert.enabled {
+        ui.indent("eff_invert", |ui| {
+            changed |= slider_f64_fine(ui, &mut effects.invert.strength, 0.0..=1.0, "Strength", 0.01);
+        });
+    }
+
+    // Dodge
+    if ui.checkbox(&mut effects.dodge.enabled, "Dodge").changed() { changed = true; }
+    if effects.dodge.enabled {
+        ui.indent("eff_dodge", |ui| {
+            changed |= slider_f64_fine(ui, &mut effects.dodge.strength, 0.0..=1.0, "Strength", 0.01);
+            changed |= edit_color(ui, &mut effects.dodge.tint);
+        });
+    }
+
+    // Burn
+    if ui.checkbox(&mut effects.burn.enabled, "Burn").changed() { changed = true; }
+    if effects.burn.enabled {
+        ui.indent("eff_burn", |ui| {
+            changed |= slider_f64_fine(ui, &mut effects.burn.strength, 0.0..=1.0, "Strength", 0.01);
+            changed |= edit_color(ui, &mut effects.burn.tint);
+        });
+    }
+
+    ui.separator();
+
+    // Complement
+    if ui.checkbox(&mut effects.complement.enabled, "Complement").changed() { changed = true; }
+    if effects.complement.enabled {
+        ui.indent("eff_complement", |ui| {
+            changed |= slider_f64_fine(ui, &mut effects.complement.strength, 0.0..=1.0, "Strength", 0.01);
+        });
+    }
+
+    // Luma Invert
+    if ui.checkbox(&mut effects.luma_invert.enabled, "Luma Invert").changed() { changed = true; }
+    if effects.luma_invert.enabled {
+        ui.indent("eff_lumainvert", |ui| {
+            changed |= slider_f64_fine(ui, &mut effects.luma_invert.strength, 0.0..=1.0, "Strength", 0.01);
+        });
+    }
+
+    // Hue Rotate
+    if ui.checkbox(&mut effects.hue_rotate.enabled, "Hue Rotate").changed() { changed = true; }
+    if effects.hue_rotate.enabled {
+        ui.indent("eff_huerotate", |ui| {
+            changed |= slider_f64_fine(ui, &mut effects.hue_rotate.strength, 0.0..=1.0, "Strength", 0.01);
+            changed |= slider_f64_fine(ui, &mut effects.hue_rotate.angle, -360.0..=360.0, "Angle", 1.0);
+        });
+    }
+
+    // Saturate
+    if ui.checkbox(&mut effects.saturate.enabled, "Saturate").changed() { changed = true; }
+    if effects.saturate.enabled {
+        ui.indent("eff_saturate", |ui| {
+            changed |= slider_f64_fine(ui, &mut effects.saturate.strength, 0.0..=1.0, "Strength", 0.01);
+            changed |= slider_f64_fine(ui, &mut effects.saturate.amount, 0.0..=1.0, "Amount", 0.01);
+        });
+    }
+
     changed
 }
 
