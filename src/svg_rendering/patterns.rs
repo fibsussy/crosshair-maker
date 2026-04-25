@@ -162,10 +162,12 @@ fn collect_pattern_pieces(piece: &Piece, pieces: &mut Vec<Piece>) {
             ..
         } => {
             let (ox, oy) = *origin;
-            for xi in 0..*x_quantity {
-                for yi in 0..*y_quantity {
-                    let dx = ox + xi.cast_signed() * *x_distance;
-                    let dy = oy + yi.cast_signed() * *y_distance;
+            let xq: u32 = *x_quantity;
+            let yq: u32 = *y_quantity;
+            for xi in 0..xq {
+                for yi in 0..yq {
+                    let dx = ox + (xi as i32) * *x_distance;
+                    let dy = oy + (yi as i32) * *y_distance;
                     let offset_obj = offset_piece(obj, dx, dy);
                     collect_pattern_pieces(&offset_obj, pieces);
                 }

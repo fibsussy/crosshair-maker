@@ -320,7 +320,14 @@ fn extent_of_primitive(
 }
 
 fn is_eraser(piece: &Piece) -> bool {
-    matches!(piece.color_type(), crate::types::ColorType::Eraser)
+    matches!(
+        piece.color_type(),
+        crate::types::ColorType::Eraser | crate::types::ColorType::Dynamic { .. }
+    )
+}
+
+fn is_dynamic(piece: &Piece) -> bool {
+    matches!(piece.color_type(), crate::types::ColorType::Dynamic { .. })
 }
 
 fn draw_piece(svg: &mut String, cx: i32, cy: i32, piece: &Piece) {
@@ -356,12 +363,11 @@ pub fn generate_svg(extent_x: u32, extent_y: u32, pieces: &[Piece]) -> String {
     .unwrap();
 
     if has_erasers {
-        // Build mask: white everywhere, then eraser shapes punch black holes.
+        // Build mask: white everywhere, then eraser/ContrastInvert shapes punch black holes.
         write!(svg, r#"<defs><mask id="em" maskUnits="userSpaceOnUse" x="0" y="0" width="{width}" height="{height}">"#).unwrap();
         write!(svg, r#"<rect x="0" y="0" width="{width}" height="{height}" fill="white"/>"#).unwrap();
         for piece in &expanded {
             if is_eraser(piece) {
-                // Draw eraser shapes as white fill inside a black-fill override
                 let mut eraser_piece = piece.clone();
                 eraser_piece.set_color_override("#000000ff");
                 draw_piece(&mut svg, cx, cy, &eraser_piece);
@@ -377,6 +383,15 @@ pub fn generate_svg(extent_x: u32, extent_y: u32, pieces: &[Piece]) -> String {
             }
         }
         svg.push_str("</g>");
+
+        // Draw Dynamic pieces ON TOP — they punched holes above
+        // but still need to be visible (with their tint color in preview,
+        // or transparent in export mode via apply_color_override).
+        for piece in &expanded {
+            if is_dynamic(piece) {
+                draw_piece(&mut svg, cx, cy, piece);
+            }
+        }
     } else {
         for piece in &expanded {
             draw_piece(&mut svg, cx, cy, piece);

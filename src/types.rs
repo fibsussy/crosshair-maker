@@ -6,6 +6,262 @@ fn default_true() -> bool {
 
 fn default_one() -> f64 { 1.0 }
 
+fn default_180() -> f64 { 180.0 }
+
+// ── Dynamic effect chain ────────────────────────────────────────
+// Project-level: defines what processing happens where Dynamic pieces are.
+// Each effect is a checkbox (enabled) + strength slider + optional params.
+// Fixed processing order: invert → dodge → burn → complement → luma_invert → hue_rotate → saturate.
+
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct DynamicEffects {
+    #[serde(default)]
+    pub invert: EffectSimple,
+    #[serde(default)]
+    pub dodge: EffectTint,
+    #[serde(default)]
+    pub burn: EffectTint,
+    #[serde(default)]
+    pub complement: EffectSimple,
+    #[serde(default)]
+    pub luma_invert: EffectSimple,
+    #[serde(default)]
+    pub hue_rotate: EffectHueRotate,
+    #[serde(default)]
+    pub saturate: EffectSaturate,
+}
+
+impl Default for DynamicEffects {
+    fn default() -> Self {
+        Self {
+            invert: EffectSimple { enabled: false, strength: 1.0 },
+            dodge: EffectTint { enabled: false, strength: 1.0, tint: "#ffffffff".into() },
+            burn: EffectTint { enabled: false, strength: 1.0, tint: "#000000ff".into() },
+            complement: EffectSimple { enabled: false, strength: 1.0 },
+            luma_invert: EffectSimple { enabled: false, strength: 1.0 },
+            hue_rotate: EffectHueRotate { enabled: false, strength: 1.0, angle: 180.0 },
+            saturate: EffectSaturate { enabled: false, strength: 1.0, amount: 1.0 },
+        }
+    }
+}
+
+impl DynamicEffects {
+    /// True if at least one effect is enabled.
+    pub fn has_any_enabled(&self) -> bool {
+        self.invert.enabled || self.dodge.enabled || self.burn.enabled
+            || self.complement.enabled || self.luma_invert.enabled
+            || self.hue_rotate.enabled || self.saturate.enabled
+    }
+
+    /// Write effects to the `.dynamic.cfg` text format for krosshair.
+    /// Fixed order: invert, dodge, burn, complement, lumainvert, huerotate, saturate.
+    /// Only writes enabled effects.
+    pub fn to_cfg_string(&self) -> String {
+        let mut s = String::new();
+        if self.invert.enabled {
+            s.push_str(&format!("invert {:.4}\n", self.invert.strength));
+        }
+        if self.dodge.enabled {
+            let (r, g, b) = hex_to_rgb_f32(&self.dodge.tint);
+            s.push_str(&format!("dodge {:.4} {:.4} {:.4} {:.4}\n", self.dodge.strength, r, g, b));
+        }
+        if self.burn.enabled {
+            let (r, g, b) = hex_to_rgb_f32(&self.burn.tint);
+            s.push_str(&format!("burn {:.4} {:.4} {:.4} {:.4}\n", self.burn.strength, r, g, b));
+        }
+        if self.complement.enabled {
+            s.push_str(&format!("complement {:.4}\n", self.complement.strength));
+        }
+        if self.luma_invert.enabled {
+            s.push_str(&format!("lumainvert {:.4}\n", self.luma_invert.strength));
+        }
+        if self.hue_rotate.enabled {
+            s.push_str(&format!("huerotate {:.4} {:.4}\n", self.hue_rotate.strength, self.hue_rotate.angle));
+        }
+        if self.saturate.enabled {
+            s.push_str(&format!("saturate {:.4} {:.4}\n", self.saturate.strength, self.saturate.amount));
+        }
+        s
+    }
+
+    /// Apply the effect chain to an RGB pixel (CPU-side, for live preview).
+    /// Input/output are 0.0-1.0 floats. Fixed order.
+    pub fn apply_to_pixel(&self, r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+        let mut c = [r, g, b];
+        if self.invert.enabled {
+            let s = self.invert.strength as f32;
+            c = [lerp(c[0], 1.0 - c[0], s), lerp(c[1], 1.0 - c[1], s), lerp(c[2], 1.0 - c[2], s)];
+        }
+        if self.dodge.enabled {
+            let s = self.dodge.strength as f32;
+            let (tr, tg, tb) = hex_to_rgb_f32(&self.dodge.tint);
+            c = [lerp(c[0], (c[0]+tr).min(1.0), s), lerp(c[1], (c[1]+tg).min(1.0), s), lerp(c[2], (c[2]+tb).min(1.0), s)];
+        }
+        if self.burn.enabled {
+            let s = self.burn.strength as f32;
+            let (tr, tg, tb) = hex_to_rgb_f32(&self.burn.tint);
+            c = [lerp(c[0], (c[0]-tr).max(0.0), s), lerp(c[1], (c[1]-tg).max(0.0), s), lerp(c[2], (c[2]-tb).max(0.0), s)];
+        }
+        if self.complement.enabled {
+            let s = self.complement.strength as f32;
+            let hsl = rgb_to_hsl_f32(c[0], c[1], c[2]);
+            let comp = hsl_to_rgb_f32((hsl[0] + 0.5) % 1.0, 1.0, 1.0 - hsl[2]);
+            c = [lerp(c[0], comp[0], s), lerp(c[1], comp[1], s), lerp(c[2], comp[2], s)];
+        }
+        if self.luma_invert.enabled {
+            let s = self.luma_invert.strength as f32;
+            let hsl = rgb_to_hsl_f32(c[0], c[1], c[2]);
+            let inv = hsl_to_rgb_f32(hsl[0], hsl[1], 1.0 - hsl[2]);
+            c = [lerp(c[0], inv[0], s), lerp(c[1], inv[1], s), lerp(c[2], inv[2], s)];
+        }
+        if self.hue_rotate.enabled {
+            let s = self.hue_rotate.strength as f32;
+            let hsl = rgb_to_hsl_f32(c[0], c[1], c[2]);
+            let h = (hsl[0] + self.hue_rotate.angle as f32 / 360.0) % 1.0;
+            let rot = hsl_to_rgb_f32(h, hsl[1], 1.0 - hsl[2]);
+            c = [lerp(c[0], rot[0], s), lerp(c[1], rot[1], s), lerp(c[2], rot[2], s)];
+        }
+        if self.saturate.enabled {
+            let s = self.saturate.strength as f32;
+            let hsl = rgb_to_hsl_f32(c[0], c[1], c[2]);
+            let sat = hsl_to_rgb_f32(hsl[0], self.saturate.amount as f32, 1.0 - hsl[2]);
+            c = [lerp(c[0], sat[0], s), lerp(c[1], sat[1], s), lerp(c[2], sat[2], s)];
+        }
+        (c[0], c[1], c[2])
+    }
+}
+
+fn lerp(a: f32, b: f32, t: f32) -> f32 { a + (b - a) * t }
+
+fn rgb_to_hsl_f32(r: f32, g: f32, b: f32) -> [f32; 3] {
+    let mx = r.max(g).max(b);
+    let mn = r.min(g).min(b);
+    let l = (mx + mn) * 0.5;
+    let d = mx - mn;
+    if d < 0.00001 { return [0.0, 0.0, l]; }
+    let s = if l > 0.5 { d / (2.0 - mx - mn) } else { d / (mx + mn) };
+    let h = if mx == r {
+        ((g - b) / d) % 6.0
+    } else if mx == g {
+        (b - r) / d + 2.0
+    } else {
+        (r - g) / d + 4.0
+    } / 6.0;
+    let h = if h < 0.0 { h + 1.0 } else { h };
+    [h, s, l]
+}
+
+fn hue_to_rgb_f32(p: f32, q: f32, mut t: f32) -> f32 {
+    if t < 0.0 { t += 1.0; }
+    if t > 1.0 { t -= 1.0; }
+    if t < 1.0/6.0 { return p + (q - p) * 6.0 * t; }
+    if t < 1.0/2.0 { return q; }
+    if t < 2.0/3.0 { return p + (q - p) * (2.0/3.0 - t) * 6.0; }
+    p
+}
+
+fn hsl_to_rgb_f32(h: f32, s: f32, l: f32) -> [f32; 3] {
+    if s < 0.00001 { return [l, l, l]; }
+    let q = if l < 0.5 { l * (1.0 + s) } else { l + s - l * s };
+    let p = 2.0 * l - q;
+    [
+        hue_to_rgb_f32(p, q, h + 1.0/3.0),
+        hue_to_rgb_f32(p, q, h),
+        hue_to_rgb_f32(p, q, h - 1.0/3.0),
+    ]
+}
+
+/// Simple effect: just enabled + strength.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EffectSimple {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_one")]
+    pub strength: f64,
+}
+
+impl Default for EffectSimple {
+    fn default() -> Self { Self { enabled: false, strength: 1.0 } }
+}
+
+/// Tinted effect (dodge/burn): strength + RGB tint color.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EffectTint {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_one")]
+    pub strength: f64,
+    #[serde(default = "default_white_tint")]
+    pub tint: String,
+}
+
+fn default_white_tint() -> String { "#ffffffff".to_string() }
+
+impl Default for EffectTint {
+    fn default() -> Self { Self { enabled: false, strength: 1.0, tint: "#ffffffff".into() } }
+}
+
+/// Hue rotation effect: strength + angle in degrees.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EffectHueRotate {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_one")]
+    pub strength: f64,
+    #[serde(default = "default_180")]
+    pub angle: f64,
+}
+
+impl Default for EffectHueRotate {
+    fn default() -> Self { Self { enabled: false, strength: 1.0, angle: 180.0 } }
+}
+
+/// Saturation effect: strength + amount (0 = desaturate, 1 = max).
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub struct EffectSaturate {
+    #[serde(default)]
+    pub enabled: bool,
+    #[serde(default = "default_one")]
+    pub strength: f64,
+    #[serde(default = "default_one")]
+    pub amount: f64,
+}
+
+impl Default for EffectSaturate {
+    fn default() -> Self { Self { enabled: false, strength: 1.0, amount: 1.0 } }
+}
+
+/// Convert a hex color string to RGB floats (0.0-1.0).
+fn hex_to_rgb_f32(hex: &str) -> (f32, f32, f32) {
+    let hex = hex.trim_start_matches('#');
+    let r = u8::from_str_radix(&hex.get(0..2).unwrap_or("ff"), 16).unwrap_or(255) as f32 / 255.0;
+    let g = u8::from_str_radix(&hex.get(2..4).unwrap_or("ff"), 16).unwrap_or(255) as f32 / 255.0;
+    let b = u8::from_str_radix(&hex.get(4..6).unwrap_or("ff"), 16).unwrap_or(255) as f32 / 255.0;
+    (r, g, b)
+}
+
+// ── Legacy types (kept for serde backward compat) ───────────────
+
+/// Old per-mode tags. Only used for deserializing legacy projects.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
+pub enum DynamicModeTag {
+    Invert, Dodge, Burn, Complement, LumaInvert, HueRotate, Saturate,
+}
+
+/// Old modes struct. Only used for deserializing legacy projects.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct DynamicModes {
+    #[serde(default)] pub invert: bool,
+    #[serde(default)] pub dodge: bool,
+    #[serde(default)] pub burn: bool,
+    #[serde(default)] pub complement: bool,
+    #[serde(default)] pub lumainvert: bool,
+    #[serde(default)] pub huerotate: bool,
+    #[serde(default)] pub saturate: bool,
+}
+
+// ── Color types ─────────────────────────────────────────────────
+
 /// Legacy enum kept only for deserializing old project files.
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum GradientTransition {
@@ -16,16 +272,12 @@ pub enum GradientTransition {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum LoopMode {
-    /// Reverse direction at each end (ping-pong).
     Bounce,
-    /// Cycle through colors in one direction, wrapping around.
     Cycle,
 }
 
 impl Default for LoopMode {
-    fn default() -> Self {
-        LoopMode::Bounce
-    }
+    fn default() -> Self { LoopMode::Bounce }
 }
 
 impl std::fmt::Display for LoopMode {
@@ -39,16 +291,12 @@ impl std::fmt::Display for LoopMode {
 
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 pub enum InterpolationMode {
-    /// Smoothly interpolate between adjacent color stops.
     Smooth,
-    /// Snap instantly to each color stop (no blending).
     Instant,
 }
 
 impl Default for InterpolationMode {
-    fn default() -> Self {
-        InterpolationMode::Smooth
-    }
+    fn default() -> Self { InterpolationMode::Smooth }
 }
 
 impl std::fmt::Display for InterpolationMode {
@@ -85,12 +333,29 @@ pub enum ColorType {
         loop_mode: LoopMode,
         #[serde(default)]
         interpolation: InterpolationMode,
-        /// Legacy field — migrated into `loop_mode`/`interpolation` on load.
         #[serde(default)]
         transition: Option<GradientTransition>,
-        /// Legacy field — migrated into `colors` on load.
         #[serde(default)]
         color2: Option<String>,
+    },
+    /// Dynamic: marks this piece as "apply the project's dynamic effect
+    /// chain here".  The piece acts as an eraser in the main crosshair
+    /// image and appears in the binary mask.  The actual effect parameters
+    /// live on `CrosshairProject::dynamic_effects`.
+    ///
+    /// Legacy fields (`mode`, `modes`, `tint`, `strength`) are silently
+    /// accepted by serde but ignored — effects are project-level now.
+    #[serde(alias = "ContrastInvert")]
+    Dynamic {
+        // Legacy fields — accepted for backward compat, ignored at runtime.
+        #[serde(default, alias = "mode")]
+        _legacy_mode: Option<DynamicModeTag>,
+        #[serde(default)]
+        _legacy_modes: Option<DynamicModes>,
+        #[serde(default)]
+        _legacy_tint: Option<String>,
+        #[serde(default)]
+        _legacy_strength: Option<f64>,
     },
 }
 
@@ -104,13 +369,11 @@ impl ColorType {
     /// Migrate legacy fields on load.
     pub fn migrate(&mut self) {
         if let ColorType::GradientCycle { colors, color2, transition, loop_mode, interpolation, .. } = self {
-            // Migrate legacy color2 into colors vec
             if let Some(c2) = color2.take() {
                 if colors.is_empty() {
                     colors.push(c2);
                 }
             }
-            // Migrate legacy transition enum into loop_mode + interpolation
             if let Some(t) = transition.take() {
                 match t {
                     GradientTransition::Bounce => {
@@ -124,8 +387,14 @@ impl ColorType {
                 }
             }
         }
+        // Note: Dynamic legacy fields (_legacy_mode, etc.) are kept for serde
+        // but the actual effect config is on CrosshairProject::dynamic_effects.
+        // Migration from old single-mode to new multi-effect happens at the
+        // project level in load_project().
     }
 }
+
+// ── Odd anchor ──────────────────────────────────────────────────
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 pub enum OddAnchor {
@@ -160,6 +429,8 @@ impl std::fmt::Display for OddAnchor {
         }
     }
 }
+
+// ── Pieces ──────────────────────────────────────────────────────
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
 pub enum Piece {
@@ -284,7 +555,6 @@ impl Piece {
             | Piece::Line { odd_anchor, .. }
             | Piece::Rectangle { odd_anchor, .. }
             | Piece::HappyFace { odd_anchor, .. } => *odd_anchor,
-            // Patterns don't have their own anchor; inner obj does
             Piece::RectPattern { .. } | Piece::CircPattern { .. } => OddAnchor::default(),
         }
     }
@@ -305,6 +575,9 @@ impl Piece {
         match ct {
             ColorType::Solid => self.base_color(),
             ColorType::Eraser => "#00000000".to_string(),
+            // Dynamic pieces render as a semi-transparent checkerboard hint in the editor,
+            // but for animated color purposes we just return a placeholder.
+            ColorType::Dynamic { .. } => "#ff00ff80".to_string(),
             ColorType::Rainbow { saturation, lightness, alpha, speed, reverse } => {
                 let dir = if reverse { -1.0 } else { 1.0 };
                 let hue = (frame * speed * dir * 360.0).rem_euclid(360.0);
@@ -319,7 +592,6 @@ impl Piece {
                 let n = colors.len();
                 let (seg, local_t) = match loop_mode {
                     LoopMode::Bounce => {
-                        // Ping-pong: 0→1→2→...→n-1→...→1→0
                         let segments = n - 1;
                         let total_len = segments as f64 * 2.0;
                         let t = (frame * speed) % total_len;
@@ -328,7 +600,6 @@ impl Piece {
                         (seg, t - seg as f64)
                     }
                     LoopMode::Cycle => {
-                        // Cycle: 0→1→...→n-1→0 (wraps around)
                         let t = (frame * speed) % n as f64;
                         let seg = t.floor() as usize % n;
                         (seg, t - t.floor())
@@ -350,7 +621,6 @@ impl Piece {
                         format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
                     }
                     InterpolationMode::Instant => {
-                        // Snap to current color stop, no blending
                         format!("#{:02x}{:02x}{:02x}{:02x}", c1.0, c1.1, c1.2, c1.3)
                     }
                 }
@@ -368,8 +638,6 @@ impl Piece {
             Piece::RectPattern { obj, .. } | Piece::CircPattern { obj, .. } => obj.base_color(),
         }
     }
-
-
 
     pub fn set_color_override(&mut self, color: &str) {
         match self {
@@ -398,8 +666,6 @@ fn hsv_to_rgb(h: f64, s: f64, v: f64) -> (u8, u8, u8) {
     (((r + m) * 255.0) as u8, ((g + m) * 255.0) as u8, ((b + m) * 255.0) as u8)
 }
 
-/// Compute the duration (in seconds) of one full animation cycle for a piece.
-/// Returns `None` if the piece has no animation.
 pub fn animation_cycle_duration(piece: &Piece) -> Option<f64> {
     match piece.color_type() {
         ColorType::Rainbow { speed, .. } => Some(1.0 / speed),
@@ -416,8 +682,6 @@ pub fn animation_cycle_duration(piece: &Piece) -> Option<f64> {
     }
 }
 
-/// Compute the maximum animation cycle duration across all pieces.
-/// Returns 1.0 as a fallback if no animated pieces exist.
 pub fn max_animation_cycle(pieces: &[Piece]) -> f64 {
     pieces.iter()
         .filter_map(|p| animation_cycle_duration(p))
@@ -437,6 +701,8 @@ fn parse_hex_color_rgba(hex: &str) -> (u8, u8, u8, u8) {
     (r, g, b, a)
 }
 
+// ── Project ─────────────────────────────────────────────────────
+
 #[derive(Clone, Serialize, Deserialize)]
 pub struct CrosshairProject {
     pub name: String,
@@ -444,6 +710,10 @@ pub struct CrosshairProject {
     /// Legacy field kept for backwards-compatible deserialization.
     #[serde(default)]
     pub odd_anchor: Option<OddAnchor>,
+    /// Global dynamic effect chain.  When any piece is Dynamic, these
+    /// effects are applied where the mask is white.
+    #[serde(default)]
+    pub dynamic_effects: DynamicEffects,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -504,3 +774,8 @@ pub fn default_pieces() -> Vec<Piece> {
         },
     ]
 }
+
+/// All legacy mode file tags (for cleanup of old per-mode mask files).
+pub const ALL_LEGACY_MODE_TAGS: &[&str] = &[
+    "invert", "dodge", "burn", "complement", "lumainvert", "huerotate", "saturate",
+];

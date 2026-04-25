@@ -11,11 +11,12 @@ use std::path::PathBuf;
 
 use eframe::egui;
 
-use types::{AppConfig, CrosshairProject, Piece};
+use types::{AppConfig, CrosshairProject, DynamicEffects, Piece};
 use preview::PreviewState;
 
 struct CrosshairApp {
     pieces: Vec<Piece>,
+    dynamic_effects: DynamicEffects,
     selected_indices: Vec<usize>,
     status_message: String,
     project_name: String,
@@ -51,6 +52,7 @@ impl CrosshairApp {
         let config = project_io::load_config();
         Self {
             pieces: types::default_pieces(),
+            dynamic_effects: DynamicEffects::default(),
             selected_indices: Vec::new(),
             status_message: String::new(),
             project_name: "Untitled".to_string(),
@@ -85,18 +87,18 @@ impl CrosshairApp {
     }
 
     fn save_with_exports(&self, path: &std::path::Path) {
-        preview::save_exports(path, &self.pieces);
+        preview::save_exports(path, &self.pieces, &self.dynamic_effects);
         self.update_current_if_matches(path);
     }
 
     fn update_current_if_matches(&self, path: &std::path::Path) {
         if self.config.current_crosshair.as_ref().map(|p| p.as_path()) == Some(path) {
-            project_io::save_current_exports(&self.pieces);
+            project_io::save_current_exports(&self.pieces, &self.dynamic_effects);
         }
     }
 
     fn set_as_current(&mut self, path: PathBuf) {
-        project_io::save_current_exports(&self.pieces);
+        project_io::save_current_exports(&self.pieces, &self.dynamic_effects);
         self.config.current_crosshair = Some(path);
         project_io::save_config(&self.config);
     }
@@ -267,6 +269,7 @@ impl CrosshairApp {
                 name: self.project_name.clone(),
                 pieces: self.pieces.clone(),
                 odd_anchor: None,
+                dynamic_effects: self.dynamic_effects.clone(),
             };
             if project_io::save_project(&project, &mut self.config, Some(path.clone())).is_some() {
                 self.save_with_exports(path);
@@ -292,6 +295,7 @@ impl CrosshairApp {
             name: name.to_string(),
             pieces: self.pieces.clone(),
             odd_anchor: None,
+            dynamic_effects: self.dynamic_effects.clone(),
         };
         self.project_name = name.to_string();
         if let Some(path) = project_io::save_project(&project, &mut self.config, None) {
@@ -307,6 +311,7 @@ impl CrosshairApp {
 
     fn new_project(&mut self, name: &str) {
         self.pieces = types::default_pieces();
+        self.dynamic_effects = DynamicEffects::default();
         self.project_name = name.to_string();
         self.current_file_path = None;
         self.selected_indices.clear();
@@ -320,6 +325,7 @@ impl CrosshairApp {
         if let Some(project) = project_io::load_project(&path) {
             let name = project.name.clone();
             self.pieces = project.pieces;
+            self.dynamic_effects = project.dynamic_effects;
             self.project_name = name.clone();
             self.current_file_path = Some(path.clone());
             self.selected_indices.clear();
@@ -418,31 +424,33 @@ impl eframe::App for CrosshairApp {
             .resizable(true)
             .default_width(300.0)
             .show(ctx, |ui| {
-                ui.heading("Properties");
-                ui.separator();
-
-                if self.selected_indices.len() == 1 {
-                    let idx = self.selected_indices[0];
-                    if let Some(piece) = self.pieces.get_mut(idx) {
-                        if ui_properties::edit_piece(ui, piece) {
-                            self.preview.mark_dirty();
-                        }
-                    }
-                } else if self.selected_indices.len() > 1 {
-                    ui.label(format!("{} pieces selected", self.selected_indices.len()));
+                egui::ScrollArea::vertical().show(ui, |ui| {
+                    ui.heading("Properties");
                     ui.separator();
-                    ui.label("Hidden Properties (Multi-Select)");
-                    ui.small("Edit properties for each selected piece individually.");
-                } else {
-                    ui.label("Select a piece to edit");
-                }
+
+                    if self.selected_indices.len() == 1 {
+                        let idx = self.selected_indices[0];
+                        if let Some(piece) = self.pieces.get_mut(idx) {
+                            if ui_properties::edit_piece(ui, piece, &mut self.dynamic_effects) {
+                                self.preview.mark_dirty();
+                            }
+                        }
+                    } else if self.selected_indices.len() > 1 {
+                        ui.label(format!("{} pieces selected", self.selected_indices.len()));
+                        ui.separator();
+                        ui.label("Hidden Properties (Multi-Select)");
+                        ui.small("Edit properties for each selected piece individually.");
+                    } else {
+                        ui.label("Select a piece to edit");
+                    }
+                });
             });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             ui.heading("Preview");
             ui.separator();
 
-            preview::render_preview_panel(ui, ctx, &mut self.preview, &self.pieces);
+            preview::render_preview_panel(ui, ctx, &mut self.preview, &self.pieces, &self.dynamic_effects);
         });
 
         if self.show_new_dialog {

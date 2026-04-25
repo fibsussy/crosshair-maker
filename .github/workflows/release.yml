@@ -131,7 +131,7 @@ jobs:
           chmod 600 ~/.ssh/aur
           ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
           rm -rf aur
-          if git clone ssh://aur@aur.archlinux.org/crosshair-maker.git aur 2>&1; then
+          if GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o StrictHostKeyChecking=no" git clone ssh://aur@aur.archlinux.org/crosshair-maker.git aur 2>&1; then
             echo "Cloned existing AUR repo"
             cd aur
             git fetch origin
@@ -153,7 +153,7 @@ jobs:
           git config user.email "action@github.com"
           git add PKGBUILD .SRCINFO crosshair-maker.install
           git commit -m "Update to v${{ needs.version.outputs.new_version }}" || echo "No changes to commit"
-          git push origin master
+          GIT_SSH_COMMAND="ssh -i ~/.ssh/aur -o StrictHostKeyChecking=no" git push origin master
         env:
           AUR_SSH_KEY: ${{ secrets.AUR_SSH_KEY }}
       - name: Create release with assets
