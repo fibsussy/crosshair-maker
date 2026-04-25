@@ -37,6 +37,8 @@ pub struct PreviewState {
     bg_image: Option<(PreviewBackground, image::RgbaImage)>,
     /// Composite texture (background + crosshair + effects).
     composite_texture: Option<egui::TextureHandle>,
+    /// Zoom level (1.0 = default).
+    zoom_level: f32,
 }
 
 impl PreviewState {
@@ -51,6 +53,7 @@ impl PreviewState {
             selected_bg: PreviewBackground::None,
             bg_image: None,
             composite_texture: None,
+            zoom_level: 1.0,
         }
     }
 
@@ -713,9 +716,26 @@ pub fn render_preview_panel(
             });
     });
 
-    let available_size = ui.available_size();
     let has_bg = preview.selected_bg != PreviewBackground::None;
     let has_dynamic = pieces.iter().any(|p| is_dynamic(p));
+
+    // Handle scroll-wheel zoom (only when hovering over the preview area)
+    let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+    if scroll_delta != 0.0 {
+        let factor = 1.0 + scroll_delta * 0.005;
+        preview.zoom_level = (preview.zoom_level * factor).max(0.01);
+    }
+
+    // Show zoom level + reset button
+    ui.horizontal(|ui| {
+        ui.label(format!("Zoom: {:.0}%", preview.zoom_level * 100.0));
+        if ui.small_button("Reset").clicked() {
+            preview.zoom_level = 1.0;
+        }
+    });
+
+    let available_size = ui.available_size();
+    let zoom = preview.zoom_level;
 
     if has_bg {
         // Live compositing mode: background + crosshair + dynamic effects
@@ -740,15 +760,18 @@ pub fn render_preview_panel(
             let bg_w = bg.width();
             let bg_h = bg.height();
 
-            // Compute composite: background centered, crosshair at mouse or center
+            // Compute composite: background centered and zoomed, crosshair at mouse or center
             let composite_w = rect.width() as u32;
             let composite_h = rect.height() as u32;
             if composite_w > 0 && composite_h > 0 {
-                // Background offset (centered)
-                let bg_ox = (composite_w as i32 - bg_w as i32) / 2;
-                let bg_oy = (composite_h as i32 - bg_h as i32) / 2;
+                // Zoomed background dimensions
+                let zbg_w = (bg_w as f32 * zoom) as i32;
+                let zbg_h = (bg_h as f32 * zoom) as i32;
+                let bg_ox = (composite_w as i32 - zbg_w) / 2;
+                let bg_oy = (composite_h as i32 - zbg_h) / 2;
 
                 // Crosshair position (center of crosshair at mouse or at center of rect)
+                // Crosshair is NOT scaled — always native pixel size
                 let ch_w = width;
                 let ch_h = height;
                 let (ch_cx, ch_cy) = if let Some(mpos) = mouse_pos {
@@ -767,8 +790,6 @@ pub fn render_preview_panel(
                 let raster_h = ch_h.min(max_size);
 
                 // Rasterize crosshair for export (dynamic → transparent, keeps piece order)
-                // This is the same image krosshair draws: normal pieces visible,
-                // transparent holes where dynamic pieces are.
                 let crosshair_rgba = {
                     let eff = apply_color_override_for_export(pieces, frame);
                     let svg = generate_svg(ext_x, ext_y, &eff);
@@ -795,20 +816,18 @@ pub fn render_preview_panel(
                 let actual_ch_w = raster_w;
                 let actual_ch_h = raster_h;
 
-                // Build composite: background → dynamic effects → crosshair overlay
-                // This mirrors what krosshair does at runtime:
-                //   1. Game renders (background)
-                //   2. Dynamic shader draws where mask is white (reads game pixels, applies effects)
-                //   3. Crosshair image alpha-blends on top (transparent where dynamic pieces are)
+                // Build composite: background (zoomed) → dynamic effects → crosshair overlay (native)
                 let mut pixels = vec![0u8; (composite_w * composite_h * 4) as usize];
                 for y in 0..composite_h {
                     for x in 0..composite_w {
                         let pi = ((y * composite_w + x) * 4) as usize;
 
-                        // 1. Background pixel
-                        let bx = x as i32 - bg_ox;
-                        let by = y as i32 - bg_oy;
-                        let (mut pr, mut pg, mut pb) = if bx >= 0 && by >= 0 && bx < bg_w as i32 && by < bg_h as i32 {
+                        // 1. Background pixel (sample from zoomed coordinates)
+                        let bx_f = (x as f32 - bg_ox as f32) / zoom;
+                        let by_f = (y as f32 - bg_oy as f32) / zoom;
+                        let bx = bx_f as i32;
+                        let by = by_f as i32;
+                        let (mut pr, mut pg, mut pb) = if bx_f >= 0.0 && by_f >= 0.0 && bx >= 0 && by >= 0 && bx < bg_w as i32 && by < bg_h as i32 {
                             let px = bg.get_pixel(bx as u32, by as u32);
                             (px[0], px[1], px[2])
                         } else {
@@ -835,13 +854,11 @@ pub fn render_preview_panel(
                                 }
                             }
 
-                            // 3. Crosshair overlay (alpha-blend; dynamic areas are transparent
-                            //    in this image so they won't overwrite the effect above)
+                            // 3. Crosshair overlay (alpha-blend)
                             if let Some(ref ch) = crosshair_rgba {
                                 if ci + 3 < ch.len() {
                                     let ca = ch[ci + 3] as f32 / 255.0;
                                     if ca > 0.001 {
-                                        // resvg outputs premultiplied alpha
                                         let sr = ch[ci] as f32 / 255.0;
                                         let sg = ch[ci + 1] as f32 / 255.0;
                                         let sb = ch[ci + 2] as f32 / 255.0;
@@ -891,25 +908,35 @@ pub fn render_preview_panel(
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Background failed to load", egui::FontId::default(), egui::Color32::GRAY);
         }
     } else {
-        // No background — original simple preview
+        // No background — scale crosshair with zoom
         if let Some(texture) = preview.texture(ctx, pieces) {
             let tex_size = texture.size();
             let aspect = tex_size[0] as f32 / tex_size[1] as f32;
             let avail_w = available_size.x;
             let avail_h = available_size.y;
-            let (img_w, img_h) = if avail_w / avail_h > aspect {
+            // Fit to available space, then apply zoom
+            let (base_w, base_h) = if avail_w / avail_h > aspect {
                 (avail_h * aspect, avail_h)
             } else {
                 (avail_w, avail_w / aspect)
             };
-            let img_size = egui::Vec2::new(img_w, img_h);
-            let (rect, _response) = ui.allocate_exact_size(img_size, egui::Sense::hover());
-            ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, egui::Color32::from_gray(20));
-            ui.painter().image(
-                texture.id(), rect,
-                egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
-                egui::Color32::WHITE,
-            );
+            let img_w = base_w * zoom;
+            let img_h = base_h * zoom;
+
+            // Use a scroll area so zoomed-in crosshair can be panned
+            egui::ScrollArea::both()
+                .max_width(avail_w)
+                .max_height(avail_h)
+                .show(ui, |ui| {
+                    let img_size = egui::Vec2::new(img_w, img_h);
+                    let (rect, _response) = ui.allocate_exact_size(img_size, egui::Sense::hover());
+                    ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, egui::Color32::from_gray(20));
+                    ui.painter().image(
+                        texture.id(), rect,
+                        egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                        egui::Color32::WHITE,
+                    );
+                });
         } else {
             let (rect, _) = ui.allocate_exact_size(available_size, egui::Sense::hover());
             ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, egui::Color32::from_gray(20));
