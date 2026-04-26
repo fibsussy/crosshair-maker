@@ -10,12 +10,13 @@ fn slider_u32(ui: &mut egui::Ui, val: &mut u32, range: std::ops::RangeInclusive<
     ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Always)).changed()
 }
 
+// f64 sliders - NO clamping so effects can go above 1 or below 0
 fn slider_f64(ui: &mut egui::Ui, val: &mut f64, range: std::ops::RangeInclusive<f64>, label: &str) -> bool {
-    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Always)).changed()
+    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Never)).changed()
 }
 
 fn slider_f64_fine(ui: &mut egui::Ui, val: &mut f64, range: std::ops::RangeInclusive<f64>, label: &str, step: f64) -> bool {
-    ui.add(egui::Slider::new(val, range).text(label).step_by(step).clamping(egui::SliderClamping::Always)).changed()
+    ui.add(egui::Slider::new(val, range).text(label).step_by(step).clamping(egui::SliderClamping::Never)).changed()
 }
 
 fn edit_origin(ui: &mut egui::Ui, origin: &mut (i32, i32)) -> bool {
