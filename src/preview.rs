@@ -2,23 +2,21 @@ use eframe::egui;
 use std::fs::File;
 use std::io::BufWriter;
 
+use crate::bg_embedded::BACKGROUND_NAMES;
 use crate::svg_rendering::{generate_svg, generate_svg_scaled, infer_bounds, infer_extent};
 use crate::types::Piece;
 
-/// Available background images for the live dynamic effects preview.
 #[derive(Clone, PartialEq)]
 pub enum PreviewBackground {
     None,
-    CSGO,
-    TheFinals,
+    Custom(String),
 }
 
 impl PreviewBackground {
-    pub fn label(&self) -> &'static str {
+    pub fn label(&self) -> String {
         match self {
-            Self::None => "None",
-            Self::CSGO => "CSGO",
-            Self::TheFinals => "The Finals",
+            Self::None => "None".to_string(),
+            Self::Custom(name) => name.clone(),
         }
     }
 }
@@ -248,17 +246,9 @@ impl PreviewState {
                 return self.bg_image.as_ref().map(|(_, img)| img);
             }
         }
-        // Load the background
-        let bytes: Option<&[u8]> = match self.selected_bg {
-            PreviewBackground::CSGO => {
-                Some(include_bytes!("../assets/preview_backgrounds/csgo.png"))
-            }
-            PreviewBackground::TheFinals => {
-                Some(include_bytes!("../assets/preview_backgrounds/thefinals.png"))
-            }
-            PreviewBackground::None => None,
-        };
-        if let Some(data) = bytes {
+        // Load the background from embedded data
+        let name = self.selected_bg.label();
+        if let Some(data) = crate::bg_embedded::get_background(&name) {
             if let Ok(img) = image::load_from_memory(data) {
                 self.bg_image = Some((self.selected_bg.clone(), img.to_rgba8()));
                 return self.bg_image.as_ref().map(|(_, img)| img);
@@ -772,6 +762,7 @@ pub fn render_preview_panel(
         }
         ui.separator();
         ui.label("Background:");
+        let bg_names = BACKGROUND_NAMES;
         let bg_label = preview.selected_bg.label();
         egui::ComboBox::from_id_salt("preview_bg")
             .selected_text(bg_label)
@@ -781,15 +772,13 @@ pub fn render_preview_panel(
                     preview.bg_pan = egui::Vec2::ZERO;
                     preview.mark_dirty();
                 }
-                if ui.selectable_label(preview.selected_bg == PreviewBackground::CSGO, "CSGO").clicked() {
-                    preview.selected_bg = PreviewBackground::CSGO;
-                    preview.bg_pan = egui::Vec2::ZERO;
-                    preview.mark_dirty();
-                }
-                if ui.selectable_label(preview.selected_bg == PreviewBackground::TheFinals, "The Finals").clicked() {
-                    preview.selected_bg = PreviewBackground::TheFinals;
-                    preview.bg_pan = egui::Vec2::ZERO;
-                    preview.mark_dirty();
+                for name in bg_names {
+                    let is_selected = matches!(&preview.selected_bg, PreviewBackground::Custom(n) if n.as_str() == *name);
+                    if ui.selectable_label(is_selected, *name).clicked() {
+                        preview.selected_bg = PreviewBackground::Custom(name.to_string());
+                        preview.bg_pan = egui::Vec2::ZERO;
+                        preview.mark_dirty();
+                    }
                 }
             });
     });

@@ -6,6 +6,7 @@ mod project_io;
 mod preview;
 mod ui_pieces;
 mod ui_properties;
+mod bg_embedded;
 
 use std::path::PathBuf;
 
