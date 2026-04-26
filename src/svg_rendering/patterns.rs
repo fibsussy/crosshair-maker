@@ -4,28 +4,37 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
     match piece {
         Piece::Cross {
             origin,
-            h_gap,
-            v_gap,
-            length,
-            thickness,
+            left_gap, right_gap, top_gap, bottom_gap,
+            left_thickness, right_thickness, top_thickness, bottom_thickness,
+            left_length, right_length, top_length, bottom_length,
             color,
             color_type,
             visible,
             odd_anchor,
             lock_gap,
+            lock_all,
         } => {
             let (ox, oy) = *origin;
             Piece::Cross {
                 origin: (ox + dx, oy + dy),
-                h_gap: *h_gap,
-                v_gap: *v_gap,
-                length: *length,
-                thickness: *thickness,
+                left_gap: *left_gap,
+                right_gap: *right_gap,
+                top_gap: *top_gap,
+                bottom_gap: *bottom_gap,
+                left_thickness: *left_thickness,
+                right_thickness: *right_thickness,
+                top_thickness: *top_thickness,
+                bottom_thickness: *bottom_thickness,
+                left_length: *left_length,
+                right_length: *right_length,
+                top_length: *top_length,
+                bottom_length: *bottom_length,
                 color: color.clone(),
                 color_type: color_type.clone(),
                 visible: *visible,
                 odd_anchor: *odd_anchor,
                 lock_gap: *lock_gap,
+                lock_all: *lock_all,
             }
         }
         Piece::Dot {
@@ -54,6 +63,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
             color_type,
             visible,
             odd_anchor,
+            anti_aliasing,
         } => {
             let (ox, oy) = *origin;
             Piece::Line {
@@ -64,6 +74,7 @@ pub fn offset_piece(piece: &Piece, dx: i32, dy: i32) -> Piece {
                 color_type: color_type.clone(),
                 visible: *visible,
                 odd_anchor: *odd_anchor,
+                anti_aliasing: *anti_aliasing,
             }
         }
         Piece::Rectangle {
@@ -187,8 +198,8 @@ fn collect_pattern_pieces(piece: &Piece, pieces: &mut Vec<Piece>) {
             let (ox, oy) = *origin;
             let angle_step = 360.0 / f64::from(*quantity);
             for i in 0..*quantity {
-                let angle_deg = f64::from(i).mul_add(angle_step, *start_deg);
-                let angle_rad = angle_deg.to_radians();
+let angle_deg = -start_deg + 90.0 + f64::from(i).mul_add(angle_step, 0.0);
+            let angle_rad = angle_deg.to_radians();
                 #[allow(clippy::cast_possible_truncation)]
                 let dx = ox + (f64::from(*radius) * angle_rad.cos()).round() as i32;
                 #[allow(clippy::cast_possible_truncation)]

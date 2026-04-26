@@ -98,38 +98,45 @@ pub use patterns::{expand_pieces, offset_piece};
 /// (x = piece-space x, y = flipped piece-space y).  Values are relative to
 /// the SVG center point (cx, cy).
 pub fn infer_bounds(pieces: &[Piece]) -> (f64, f64, f64, f64) {
-    let mut min_x: f64 = 0.0;
-    let mut max_x: f64 = 0.0;
-    let mut min_y: f64 = 0.0;
-    let mut max_y: f64 = 0.0;
+    let mut min_x: f64 = f64::MAX;
+    let mut max_x: f64 = f64::MIN;
+    let mut min_y: f64 = f64::MAX;
+    let mut max_y: f64 = f64::MIN;
 
     for piece in pieces {
         if !piece.is_visible() {
             continue;
         }
-        let (ax, ay) = piece.odd_anchor().offset();
+let (ax, ay) = piece.odd_anchor().offset();
         match piece {
             Piece::Cross {
                 origin,
-                h_gap,
-                v_gap,
-                length,
-                thickness,
+                left_gap, right_gap, top_gap, bottom_gap,
+                left_thickness, right_thickness, top_thickness, bottom_thickness,
+                left_length, right_length, top_length, bottom_length,
                 ..
             } => {
                 let (ox, oy) = *origin;
-                let len = *length as f64;
 
-                let v_reach = (*v_gap as f64 / 2.0).ceil() + len;
-                let h_reach = (*h_gap as f64 / 2.0).ceil() + len;
+                let (left_gap_pos, _) = split_dim(*left_gap, ax);
+                let (right_gap_pos, _) = split_dim(*right_gap, ax);
+                let (top_gap_pos, _) = split_dim(*top_gap, ay);
+                let (bottom_gap_pos, _) = split_dim(*bottom_gap, ay);
 
-                let (thick_neg_x, thick_pos_x) = split_dim(*thickness, ax);
-                let (thick_neg_y, thick_pos_y) = split_dim(*thickness, ay);
+                let (left_thick_neg, _) = split_dim(*left_thickness, ax);
+                let (_, right_thick_pos) = split_dim(*right_thickness, ax);
+                let (top_thick_neg, _) = split_dim(*top_thickness, ay);
+                let (_, bottom_thick_pos) = split_dim(*bottom_thickness, ay);
 
-                min_x = min_x.min((ox as f64 - h_reach).min(ox as f64 - thick_neg_x));
-                max_x = max_x.max((ox as f64 + h_reach).max(ox as f64 + thick_pos_x));
-                min_y = min_y.min((-(oy as f64) - v_reach).min(-(oy as f64) - thick_neg_y));
-                max_y = max_y.max((-(oy as f64) + v_reach).max(-(oy as f64) + thick_pos_y));
+                let top_reach = top_gap_pos as f64 + *top_length as f64;
+                let bot_reach = bottom_gap_pos as f64 + *bottom_length as f64;
+                let left_reach = left_gap_pos as f64 + *left_length as f64;
+                let right_reach = right_gap_pos as f64 + *right_length as f64;
+
+                min_x = min_x.min(ox as f64 - left_reach - left_thick_neg).min(ox as f64 - left_thick_neg);
+                max_x = max_x.max(ox as f64 + right_reach + right_thick_pos).max(ox as f64 + right_thick_pos);
+                min_y = min_y.min(-(oy as f64) - top_reach - top_thick_neg).min(-(oy as f64) - top_thick_neg);
+                max_y = max_y.max(-(oy as f64) + bot_reach + bottom_thick_pos).max(-(oy as f64) + bottom_thick_pos);
             }
             Piece::Dot { origin, size, .. } => {
                 let s = size.cast_signed();
@@ -212,7 +219,7 @@ pub fn infer_bounds(pieces: &[Piece]) -> (f64, f64, f64, f64) {
                 }
                 let angle_step = 360.0 / f64::from(q);
                 for i in 0..q {
-                    let angle_deg = f64::from(i).mul_add(angle_step, *start_deg);
+                    let angle_deg = -start_deg + 90.0 + f64::from(i).mul_add(angle_step, 0.0);
                     let angle_rad = angle_deg.to_radians();
                     #[allow(clippy::cast_possible_truncation)]
                     let dx = ox + (f64::from(*radius) * angle_rad.cos()).round() as i32;
@@ -244,6 +251,13 @@ pub fn infer_bounds(pieces: &[Piece]) -> (f64, f64, f64, f64) {
         }
     }
 
+    if min_x == f64::MAX {
+        min_x = 0.0;
+        max_x = 0.0;
+        min_y = 0.0;
+        max_y = 0.0;
+    }
+
     (min_x, min_y, max_x, max_y)
 }
 
@@ -259,8 +273,8 @@ pub fn infer_extent(pieces: &[Piece]) -> (i32, i32) {
     (extent, extent)
 }
 
-/// Helper: accumulate bounds for a primitive piece (Dot / Line / Rectangle)
-/// used inside pattern expansion in `infer_extent`.
+/// Helper: accumulate bounds for a primitive piece used inside pattern
+/// expansion in `infer_extent`.  Handles all leaf piece types.
 fn extent_of_primitive(
     piece: &Piece,
     min_x: &mut f64,
@@ -315,6 +329,54 @@ fn extent_of_primitive(
             *min_y = min_y.min(-(oy as f64) - h_neg);
             *max_y = max_y.max(-(oy as f64) + h_pos);
         }
+        Piece::Cross {
+            origin,
+            left_gap, right_gap, top_gap, bottom_gap,
+            left_thickness, right_thickness, top_thickness, bottom_thickness,
+            left_length, right_length, top_length, bottom_length,
+            ..
+        } => {
+            let (ox, oy) = *origin;
+
+            let (left_gap_pos, _) = split_dim(*left_gap, ax);
+            let (right_gap_pos, _) = split_dim(*right_gap, ax);
+            let (top_gap_pos, _) = split_dim(*top_gap, ay);
+            let (bottom_gap_pos, _) = split_dim(*bottom_gap, ay);
+
+            let (left_thick_neg, _) = split_dim(*left_thickness, ax);
+            let (_, right_thick_pos) = split_dim(*right_thickness, ax);
+            let (top_thick_neg, _) = split_dim(*top_thickness, ay);
+            let (_, bottom_thick_pos) = split_dim(*bottom_thickness, ay);
+
+            let top_reach = top_gap_pos as f64 + *top_length as f64;
+            let bot_reach = bottom_gap_pos as f64 + *bottom_length as f64;
+            let left_reach = left_gap_pos as f64 + *left_length as f64;
+            let right_reach = right_gap_pos as f64 + *right_length as f64;
+
+            *min_x = min_x.min(ox as f64 - left_reach - left_thick_neg).min(ox as f64 - left_thick_neg);
+            *max_x = max_x.max(ox as f64 + right_reach + right_thick_pos).max(ox as f64 + right_thick_pos);
+            *min_y = min_y.min(-(oy as f64) - top_reach - top_thick_neg).min(-(oy as f64) - top_thick_neg);
+            *max_y = max_y.max(-(oy as f64) + bot_reach + bottom_thick_pos).max(-(oy as f64) + bottom_thick_pos);
+        }
+        Piece::HappyFace { origin, size, .. } => {
+            let (ox, oy) = *origin;
+            let s = f64::from(size.cast_signed());
+            let scale = s / 3.0;
+            let dot = size.cast_signed();
+            let (d_neg_x, d_pos_x) = split_dim(dot, ax);
+            let (d_neg_y, d_pos_y) = split_dim(dot, ay);
+            let offsets: [(i32, i32); 7] = [
+                (-3, 4), (3, 4), (-6, -1), (-3, -4), (0, -4), (3, -4), (6, -1),
+            ];
+            for (dx, dy) in offsets {
+                let px = ox as f64 + (f64::from(dx) * scale).round();
+                let py = -(oy as f64) - (f64::from(dy) * scale).round();
+                *min_x = min_x.min(px - d_neg_x);
+                *max_x = max_x.max(px + d_pos_x);
+                *min_y = min_y.min(py - d_neg_y);
+                *max_y = max_y.max(py + d_pos_y);
+            }
+        }
         _ => {}
     }
 }
@@ -341,6 +403,42 @@ fn draw_piece(svg: &mut String, cx: i32, cy: i32, piece: &Piece) {
     }
 }
 
+/// Generate an SVG with integer scaling applied.  When `scale_num > scale_den`,
+/// every pixel becomes `scale_num/scale_den` pixels — no fractional coordinates.
+pub fn generate_svg_scaled(extent_x: u32, extent_y: u32, pieces: &[Piece], scale_num: u32, scale_den: u32) -> String {
+    // Scale the output dimensions
+    let base_w = extent_x as i32 * 2;
+    let base_h = extent_y as i32 * 2;
+    let out_w = base_w as u32 * scale_num / scale_den;
+    let out_h = base_h as u32 * scale_num / scale_den;
+    let scale_f = scale_num as f64 / scale_den as f64;
+
+    let cx = base_w / 2;
+    let cy = base_h / 2;
+
+    let expanded = expand_pieces(pieces);
+
+    let mut svg = String::new();
+    write!(
+        svg,
+        r#"<svg width="{out_w}" height="{out_h}" xmlns="http://www.w3.org/2000/svg">"#
+    )
+    .unwrap();
+    write!(
+        svg,
+        r#"<rect x="0" y="0" width="{out_w}" height="{out_h}" fill-opacity="0"/>"#
+    )
+    .unwrap();
+
+    // Wrap all content in a scale transform
+    write!(svg, r#"<g transform="scale({scale_f})" shape-rendering="crispEdges">"#).unwrap();
+
+    render_pieces_to_svg(&mut svg, base_w, base_h, cx, cy, &expanded);
+
+    svg.push_str("</g></svg>");
+    svg
+}
+
 pub fn generate_svg(extent_x: u32, extent_y: u32, pieces: &[Piece]) -> String {
     let width = extent_x.cast_signed() * 2;
     let height = extent_y.cast_signed() * 2;
@@ -348,7 +446,6 @@ pub fn generate_svg(extent_x: u32, extent_y: u32, pieces: &[Piece]) -> String {
     let cy = height / 2;
 
     let expanded = expand_pieces(pieces);
-    let has_erasers = expanded.iter().any(|p| is_eraser(p));
 
     let mut svg = String::new();
     write!(
@@ -362,42 +459,54 @@ pub fn generate_svg(extent_x: u32, extent_y: u32, pieces: &[Piece]) -> String {
     )
     .unwrap();
 
-    if has_erasers {
-        // Build mask: white everywhere, then eraser/ContrastInvert shapes punch black holes.
-        write!(svg, r#"<defs><mask id="em" maskUnits="userSpaceOnUse" x="0" y="0" width="{width}" height="{height}">"#).unwrap();
-        write!(svg, r#"<rect x="0" y="0" width="{width}" height="{height}" fill="white"/>"#).unwrap();
-        for piece in &expanded {
-            if is_eraser(piece) {
-                let mut eraser_piece = piece.clone();
-                eraser_piece.set_color_override("#000000ff");
-                draw_piece(&mut svg, cx, cy, &eraser_piece);
-            }
-        }
-        svg.push_str("</mask></defs>");
-
-        // Draw non-eraser pieces inside the masked group
-        write!(svg, r#"<g mask="url(#em)">"#).unwrap();
-        for piece in &expanded {
-            if !is_eraser(piece) {
-                draw_piece(&mut svg, cx, cy, piece);
-            }
-        }
-        svg.push_str("</g>");
-
-        // Draw Dynamic pieces ON TOP — they punched holes above
-        // but still need to be visible (with their tint color in preview,
-        // or transparent in export mode via apply_color_override).
-        for piece in &expanded {
-            if is_dynamic(piece) {
-                draw_piece(&mut svg, cx, cy, piece);
-            }
-        }
-    } else {
-        for piece in &expanded {
-            draw_piece(&mut svg, cx, cy, piece);
-        }
-    }
+    render_pieces_to_svg(&mut svg, width, height, cx, cy, &expanded);
 
     svg.push_str("</svg>");
     svg
+}
+
+/// Shared piece rendering logic used by both `generate_svg` and `generate_svg_scaled`.
+fn render_pieces_to_svg(svg: &mut String, width: i32, height: i32, cx: i32, cy: i32, expanded: &[Piece]) {
+    // Layer-by-layer rendering: each eraser only erases pieces before it
+    let mut pending_pieces: Vec<&Piece> = Vec::new();
+    let mut mask_counter: u32 = 0;
+
+    for piece in expanded {
+        if is_eraser(piece) {
+            // Draw pending pieces with current mask
+            if !pending_pieces.is_empty() {
+                mask_counter += 1;
+                let mask_id = format!("em{}", mask_counter);
+                write!(svg, r#"<defs><mask id="{mask_id}" maskUnits="userSpaceOnUse" x="0" y="0" width="{width}" height="{height}">"#).unwrap();
+                write!(svg, r#"<rect x="0" y="0" width="{width}" height="{height}" fill="white"/>"#).unwrap();
+
+                let mut eraser_piece = piece.clone();
+                eraser_piece.set_color_override("#000000ff");
+                draw_piece(svg, cx, cy, &eraser_piece);
+
+                svg.push_str("</mask></defs>");
+                write!(svg, r#"<g mask="url(#{mask_id})">"#).unwrap();
+
+                for p in &pending_pieces {
+                    draw_piece(svg, cx, cy, p);
+                }
+                svg.push_str("</g>");
+                pending_pieces.clear();
+            }
+
+            // Also draw the eraser piece itself (if it's dynamic, with its color)
+            if is_dynamic(piece) {
+                draw_piece(svg, cx, cy, piece);
+            }
+        } else {
+            pending_pieces.push(piece);
+        }
+    }
+
+    // Draw remaining pieces without mask
+    if !pending_pieces.is_empty() {
+        for p in &pending_pieces {
+            draw_piece(svg, cx, cy, p);
+        }
+    }
 }

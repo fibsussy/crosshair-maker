@@ -4,10 +4,9 @@ use super::{split_dim, write_rect};
 pub fn draw_cross(svg: &mut String, cx: i32, cy: i32, piece: &Piece) {
     let Piece::Cross {
         origin,
-        h_gap,
-        v_gap,
-        length,
-        thickness,
+        left_gap, right_gap, top_gap, bottom_gap,
+        left_thickness, right_thickness, top_thickness, bottom_thickness,
+        left_length, right_length, top_length, bottom_length,
         color,
         odd_anchor,
         ..
@@ -20,34 +19,25 @@ pub fn draw_cross(svg: &mut String, cx: i32, cy: i32, piece: &Piece) {
     let (ax, ay) = odd_anchor.offset();
     let cross_cx = cx as f64 + ox as f64;
     let cross_cy = cy as f64 - oy as f64;
-    let len = *length as f64;
 
-    // ── gap splits ──────────────────────────────────────────────
-    let (gap_top, gap_bot) = split_dim(*v_gap, ay);
-    let (gap_left, gap_right) = split_dim(*h_gap, ax);
+    let (_, top_gap_neg) = split_dim(*top_gap, ay);
+    let (bottom_gap_pos, _) = split_dim(*bottom_gap, ay);
+    let (_, left_gap_neg) = split_dim(*left_gap, ax);
+    let (right_gap_pos, _) = split_dim(*right_gap, ax);
 
-    // ── reach: symmetric outer boundary ─────────────────────────
-    let v_reach = (*v_gap as f64 / 2.0).ceil() + len;
-    let h_reach = (*h_gap as f64 / 2.0).ceil() + len;
+    let (_, top_thick_neg) = split_dim(*top_thickness, ay);
+    let (bottom_thick_pos, _) = split_dim(*bottom_thickness, ay);
+    let (_, left_thick_neg) = split_dim(*left_thickness, ax);
+    let (right_thick_pos, _) = split_dim(*right_thickness, ax);
 
-    let arm_len_top = v_reach - gap_top;
-    let arm_len_bot = v_reach - gap_bot;
-    let arm_len_left = h_reach - gap_left;
-    let arm_len_right = h_reach - gap_right;
+    let top_x = cross_cx - top_thick_neg;
+    let bot_x = cross_cx - bottom_thick_pos;
+    let left_y = cross_cy - left_thick_neg;
+    let right_y = cross_cy - right_thick_pos;
 
-    // ── thickness splits ────────────────────────────────────────
-    let (thick_neg_x, _thick_pos_x) = split_dim(*thickness, ax);
-    let (thick_neg_y, _thick_pos_y) = split_dim(*thickness, ay);
-    let thick_w = *thickness as f64;
-    let thick_h = *thickness as f64;
+    write_rect(svg, top_x, cross_cy - top_gap_neg - *top_length as f64, *top_thickness as f64, *top_length as f64, color);
+    write_rect(svg, bot_x, cross_cy + bottom_gap_pos, *bottom_thickness as f64, *bottom_length as f64, color);
 
-    // ── vertical arms (top & bottom) ────────────────────────────
-    let vert_x = cross_cx - thick_neg_x;
-    write_rect(svg, vert_x, cross_cy - gap_top - arm_len_top, thick_w, arm_len_top, color);
-    write_rect(svg, vert_x, cross_cy + gap_bot, thick_w, arm_len_bot, color);
-
-    // ── horizontal arms (left & right) ──────────────────────────
-    let horiz_y = cross_cy - thick_neg_y;
-    write_rect(svg, cross_cx - gap_left - arm_len_left, horiz_y, arm_len_left, thick_h, color);
-    write_rect(svg, cross_cx + gap_right, horiz_y, arm_len_right, thick_h, color);
+    write_rect(svg, cross_cx - left_gap_neg - *left_length as f64, left_y, *left_length as f64, *left_thickness as f64, color);
+    write_rect(svg, cross_cx + right_gap_pos, right_y, *right_length as f64, *right_thickness as f64, color);
 }

@@ -3,19 +3,19 @@ use eframe::egui;
 use crate::types::{OddAnchor, Piece, DynamicEffects};
 
 fn slider_i32(ui: &mut egui::Ui, val: &mut i32, range: std::ops::RangeInclusive<i32>, label: &str) -> bool {
-    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Never)).changed()
+    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Always)).changed()
 }
 
 fn slider_u32(ui: &mut egui::Ui, val: &mut u32, range: std::ops::RangeInclusive<u32>, label: &str) -> bool {
-    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Never)).changed()
+    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Always)).changed()
 }
 
 fn slider_f64(ui: &mut egui::Ui, val: &mut f64, range: std::ops::RangeInclusive<f64>, label: &str) -> bool {
-    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Never)).changed()
+    ui.add(egui::Slider::new(val, range).text(label).step_by(1.0).clamping(egui::SliderClamping::Always)).changed()
 }
 
 fn slider_f64_fine(ui: &mut egui::Ui, val: &mut f64, range: std::ops::RangeInclusive<f64>, label: &str, step: f64) -> bool {
-    ui.add(egui::Slider::new(val, range).text(label).step_by(step).clamping(egui::SliderClamping::Never)).changed()
+    ui.add(egui::Slider::new(val, range).text(label).step_by(step).clamping(egui::SliderClamping::Always)).changed()
 }
 
 fn edit_origin(ui: &mut egui::Ui, origin: &mut (i32, i32)) -> bool {
@@ -62,29 +62,139 @@ fn edit_odd_anchor(ui: &mut egui::Ui, anchor: &mut OddAnchor) -> bool {
 }
 
 pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece, effects: &mut DynamicEffects) -> bool {
-    let mut changed = false;
+let mut changed = false;
     match piece {
         Piece::Cross {
-            origin, h_gap, v_gap, length, thickness,
-            color, color_type, odd_anchor, lock_gap, ..
+            origin, color, color_type, odd_anchor, lock_all, lock_gap,
+            left_gap, right_gap, top_gap, bottom_gap,
+            left_thickness, right_thickness, top_thickness, bottom_thickness,
+            left_length, right_length, top_length, bottom_length,
+            ..
         } => {
             ui.label("Cross");
             changed |= edit_origin(ui, origin);
-            if ui.checkbox(lock_gap, "Lock Axis").changed() {
-                if *lock_gap { *v_gap = *h_gap; }
-                changed = true;
-            }
-            if *lock_gap {
-                if slider_i32(ui, h_gap, -100..=100, "Gap") {
-                    *v_gap = *h_gap;
+
+            // Lock All: main control - when checked, all 4 sides sync to one value
+            if ui.checkbox(lock_all, "Lock All").changed() {
+                if *lock_all {
+                    *lock_gap = true; // auto-check Lock Axes too
+                    *right_gap = *left_gap;
+                    *top_gap = *left_gap;
+                    *bottom_gap = *left_gap;
+                    *right_thickness = *left_thickness;
+                    *top_thickness = *left_thickness;
+                    *bottom_thickness = *left_thickness;
+                    *right_length = *left_length;
+                    *top_length = *left_length;
+                    *bottom_length = *left_length;
                     changed = true;
                 }
-            } else {
-                changed |= slider_i32(ui, h_gap, -100..=100, "H Gap");
-                changed |= slider_i32(ui, v_gap, -100..=100, "V Gap");
             }
-            changed |= slider_i32(ui, length, -200..=200, "Length");
-            changed |= slider_i32(ui, thickness, 1..=50, "Thickness");
+
+            // Lock Axes: only show when Lock All is unchecked - syncs H/V pairs
+            if !*lock_all {
+                if ui.checkbox(lock_gap, "Lock Axes").changed() {
+                    if *lock_gap {
+                        *right_gap = *left_gap;
+                        *top_gap = *left_gap;
+                        *bottom_gap = *left_gap;
+                        *right_thickness = *left_thickness;
+                        *top_thickness = *left_thickness;
+                        *bottom_thickness = *left_thickness;
+                        *right_length = *left_length;
+                        *top_length = *left_length;
+                        *bottom_length = *left_length;
+                        changed = true;
+                    }
+                }
+            }
+
+            if *lock_all {
+                // Lock All checked: show 1 slider
+                ui.group(|ui| {
+                    ui.label("All Sides:");
+                    let gap_changed = slider_i32(ui, left_gap, -100..=100, "Gap");
+                    if gap_changed {
+                        *right_gap = *left_gap;
+                        *top_gap = *left_gap;
+                        *bottom_gap = *left_gap;
+                    }
+                    let thick_changed = slider_i32(ui, left_thickness, 1..=50, "Thickness");
+                    if thick_changed {
+                        *right_thickness = *left_thickness;
+                        *top_thickness = *left_thickness;
+                        *bottom_thickness = *left_thickness;
+                    }
+                    let len_changed = slider_i32(ui, left_length, -200..=200, "Length");
+                    if len_changed {
+                        *right_length = *left_length;
+                        *top_length = *left_length;
+                        *bottom_length = *left_length;
+                    }
+                    changed |= gap_changed || thick_changed || len_changed;
+                });
+            } else if *lock_gap {
+                // Lock Axes checked: show 2 (H/V)
+                ui.group(|ui| {
+                    ui.label("Horizontal:");
+                    let gap_changed = slider_i32(ui, left_gap, -100..=100, "Gap");
+                    if gap_changed {
+                        *right_gap = *left_gap;
+                    }
+                    let thick_changed = slider_i32(ui, left_thickness, 1..=50, "Thickness");
+                    if thick_changed {
+                        *right_thickness = *left_thickness;
+                    }
+                    let len_changed = slider_i32(ui, left_length, -200..=200, "Length");
+                    if len_changed {
+                        *right_length = *left_length;
+                    }
+                    changed |= gap_changed || thick_changed || len_changed;
+                });
+                ui.group(|ui| {
+                    ui.label("Vertical:");
+                    let gap_changed = slider_i32(ui, top_gap, -100..=100, "Gap");
+                    if gap_changed {
+                        *bottom_gap = *top_gap;
+                    }
+                    let thick_changed = slider_i32(ui, top_thickness, 1..=50, "Thickness");
+                    if thick_changed {
+                        *bottom_thickness = *top_thickness;
+                    }
+                    let len_changed = slider_i32(ui, top_length, -200..=200, "Length");
+                    if len_changed {
+                        *bottom_length = *top_length;
+                    }
+                    changed |= gap_changed || thick_changed || len_changed;
+                });
+            } else {
+                // All 4 independent - show Left/Right/Top/Bottom groups
+                ui.group(|ui| {
+                    ui.label("Left:");
+                    changed |= slider_i32(ui, left_gap, -100..=100, "Gap");
+                    changed |= slider_i32(ui, left_thickness, 1..=50, "Thickness");
+                    changed |= slider_i32(ui, left_length, -200..=200, "Length");
+                });
+                ui.group(|ui| {
+                    ui.label("Right:");
+                    changed |= slider_i32(ui, right_gap, -100..=100, "Gap");
+                    changed |= slider_i32(ui, right_thickness, 1..=50, "Thickness");
+                    changed |= slider_i32(ui, right_length, -200..=200, "Length");
+                });
+                ui.group(|ui| {
+                    ui.label("Top:");
+                    changed |= slider_i32(ui, top_gap, -100..=100, "Gap");
+                    changed |= slider_i32(ui, top_thickness, 1..=50, "Thickness");
+                    changed |= slider_i32(ui, top_length, -200..=200, "Length");
+                });
+                ui.group(|ui| {
+                    ui.label("Bottom:");
+                    changed |= slider_i32(ui, bottom_gap, -100..=100, "Gap");
+                    changed |= slider_i32(ui, bottom_thickness, 1..=50, "Thickness");
+                    changed |= slider_i32(ui, bottom_length, -200..=200, "Length");
+                });
+            }
+
             ui.separator();
             changed |= edit_color_section(ui, color, color_type, effects);
             ui.separator();
@@ -99,7 +209,7 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece, effects: &mut DynamicEff
             ui.separator();
             changed |= edit_odd_anchor(ui, odd_anchor);
         }
-        Piece::Line { origin, vector, thickness, color, color_type, odd_anchor, .. } => {
+        Piece::Line { origin, vector, thickness, color, color_type, odd_anchor, anti_aliasing, .. } => {
             ui.label("Line");
             changed |= edit_origin(ui, origin);
             ui.horizontal(|ui| {
@@ -109,6 +219,7 @@ pub fn edit_piece(ui: &mut egui::Ui, piece: &mut Piece, effects: &mut DynamicEff
                 changed |= ui.add(egui::DragValue::new(&mut vector.1).speed(1.0)).changed();
             });
             changed |= slider_i32(ui, thickness, 1..=50, "Thickness");
+            ui.checkbox(anti_aliasing, "Anti-aliasing");
             ui.separator();
             changed |= edit_color_section(ui, color, color_type, effects);
             ui.separator();
@@ -189,15 +300,19 @@ fn default_piece_of_type(name: &str) -> Piece {
         "Line" => Piece::Line {
             origin: (0, 0), vector: (10, 0), thickness: 2, color: "#ffffffff".to_string(),
             color_type: default_color_type, visible: true, odd_anchor: OddAnchor::default(),
+            anti_aliasing: false,
         },
         "Rectangle" => Piece::Rectangle {
             origin: (0, 0), width: 10, height: 10, rotation: 0.0, color: "#ffffffff".to_string(),
             color_type: default_color_type, visible: true, odd_anchor: OddAnchor::default(),
         },
         "Cross" => Piece::Cross {
-            origin: (0, 0), h_gap: 2, v_gap: 2, length: 4, thickness: 2,
+            origin: (0, 0),
+            left_gap: 2, right_gap: 2, top_gap: 2, bottom_gap: 2,
+            left_thickness: 2, right_thickness: 2, top_thickness: 2, bottom_thickness: 2,
+            left_length: 4, right_length: 4, top_length: 4, bottom_length: 4,
             color: "#00ff7dff".to_string(), color_type: default_color_type,
-            visible: true, odd_anchor: OddAnchor::default(), lock_gap: true,
+            visible: true, odd_anchor: OddAnchor::default(), lock_gap: true, lock_all: true,
         },
         "HappyFace" => Piece::HappyFace {
             origin: (0, 0), size: 3, color: "#00ff7dff".to_string(),
@@ -417,6 +532,10 @@ fn edit_interpolation_mode(ui: &mut egui::Ui, interpolation: &mut crate::types::
 /// Render the dynamic effects panel (fixed order).  Returns true if anything changed.
 pub fn edit_dynamic_effects(ui: &mut egui::Ui, effects: &mut DynamicEffects) -> bool {
     let mut changed = false;
+
+    // Overall opacity
+    changed |= slider_f64_fine(ui, &mut effects.opacity, 0.0..=1.0, "Opacity", 0.01);
+    ui.separator();
 
     // Invert
     if ui.checkbox(&mut effects.invert.enabled, "Invert").changed() { changed = true; }

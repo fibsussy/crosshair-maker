@@ -29,6 +29,7 @@ pub fn render_pieces_panel(
     mut on_export_apng: impl FnMut(),
     mut on_request_delete: impl FnMut(),
     mut on_set_current: impl FnMut(PathBuf),
+    mut on_remove_recent: impl FnMut(usize),
 ) {
     ui.heading("Crosshair Maker");
     ui.separator();
@@ -162,8 +163,7 @@ pub fn render_pieces_panel(
                     on_open(p);
                 }
                 if let Some(idx) = remove_idx {
-                    config.recent_crosshairs.remove(idx);
-                    crate::project_io::save_config(config);
+                    on_remove_recent(idx);
                 }
             });
     }
@@ -385,15 +385,15 @@ pub fn render_pieces_panel(
     if ui.button("Cross").clicked() {
         pieces.push(crate::types::Piece::Cross {
             origin: (0, 0),
-            h_gap: 2,
-            v_gap: 2,
-            length: 4,
-            thickness: 2,
+            left_gap: 2, right_gap: 2, top_gap: 2, bottom_gap: 2,
+            left_thickness: 2, right_thickness: 2, top_thickness: 2, bottom_thickness: 2,
+            left_length: 4, right_length: 4, top_length: 4, bottom_length: 4,
             color: "#00ff7dff".to_string(),
             color_type: dc.clone(),
             visible: true,
             odd_anchor: da,
             lock_gap: true,
+            lock_all: true,
         });
         selected_indices.clear();
         selected_indices.push(pieces.len() - 1);
@@ -419,6 +419,7 @@ pub fn render_pieces_panel(
             color_type: dc.clone(),
             visible: true,
             odd_anchor: da,
+            anti_aliasing: false,
         });
         selected_indices.clear();
         selected_indices.push(pieces.len() - 1);

@@ -2,7 +2,7 @@ use eframe::egui;
 use std::fs::File;
 use std::io::BufWriter;
 
-use crate::svg_rendering::{generate_svg, infer_bounds, infer_extent};
+use crate::svg_rendering::{generate_svg, generate_svg_scaled, infer_bounds, infer_extent};
 use crate::types::Piece;
 
 /// Available background images for the live dynamic effects preview.
@@ -39,6 +39,14 @@ pub struct PreviewState {
     composite_texture: Option<egui::TextureHandle>,
     /// Zoom level (1.0 = default).
     zoom_level: f32,
+    /// Crosshair scale as (numerator, denominator) for clean integer scaling.
+    /// e.g. (2,1) = x2, (1,2) = x1/2. Avoids fractional anti-aliasing artifacts.
+    pub crosshair_scale: (u32, u32),
+    /// When true, dynamic effects sample the background at native (unscaled)
+    /// resolution so the preview honestly represents the real pixel count.
+    pub honest_pixels: bool,
+    /// Background pan offset (pixels in composite space).
+    bg_pan: egui::Vec2,
 }
 
 impl PreviewState {
@@ -54,6 +62,9 @@ impl PreviewState {
             bg_image: None,
             composite_texture: None,
             zoom_level: 1.0,
+            crosshair_scale: (1, 1),
+            honest_pixels: true,
+            bg_pan: egui::Vec2::ZERO,
         }
     }
 
@@ -77,12 +88,22 @@ impl PreviewState {
                 extent_y.cast_unsigned().min(max),
             )
         };
-        generate_svg(extent_x, extent_y, pieces)
+        let (sn, sd) = self.crosshair_scale;
+        if sn != 1 || sd != 1 {
+            generate_svg_scaled(extent_x, extent_y, pieces, sn, sd)
+        } else {
+            generate_svg(extent_x, extent_y, pieces)
+        }
     }
 
     pub fn generate_svg_full(&self, pieces: &[Piece]) -> String {
         let (extent_x, extent_y) = infer_extent(pieces);
-        generate_svg(extent_x.cast_unsigned(), extent_y.cast_unsigned(), pieces)
+        let (sn, sd) = self.crosshair_scale;
+        if sn != 1 || sd != 1 {
+            generate_svg_scaled(extent_x.cast_unsigned(), extent_y.cast_unsigned(), pieces, sn, sd)
+        } else {
+            generate_svg(extent_x.cast_unsigned(), extent_y.cast_unsigned(), pieces)
+        }
     }
 
     pub fn update(&mut self, ctx: &egui::Context, pieces: &[Piece]) {
@@ -172,6 +193,46 @@ impl PreviewState {
 
     pub fn set_override_max(&mut self, val: bool) {
         self.override_max = val;
+        self.mark_dirty();
+    }
+
+    /// Format crosshair scale for display (e.g. "x2", "x1/3").
+    pub fn scale_label(&self) -> String {
+        let (n, d) = self.crosshair_scale;
+        if d == 1 {
+            format!("x{n}")
+        } else {
+            format!("x{n}/{d}")
+        }
+    }
+
+    /// Step the crosshair scale up (larger).
+    pub fn scale_up(&mut self) {
+        let (n, d) = self.crosshair_scale;
+        self.crosshair_scale = if d > 1 {
+            // x1/3 -> x1/2, x1/2 -> x1
+            (n, d - 1)
+        } else {
+            // x1 -> x2, x2 -> x3, etc.
+            (n + 1, 1)
+        };
+        self.mark_dirty();
+    }
+
+    /// Step the crosshair scale down (smaller).
+    pub fn scale_down(&mut self) {
+        let (n, d) = self.crosshair_scale;
+        self.crosshair_scale = if n > 1 {
+            // x3 -> x2, x2 -> x1
+            (n - 1, d)
+        } else {
+            // x1 -> x1/2, x1/2 -> x1/3, cap at x1/8
+            if d < 8 {
+                (1, d + 1)
+            } else {
+                (1, 8)
+            }
+        };
         self.mark_dirty();
     }
 
@@ -682,12 +743,26 @@ pub fn render_preview_panel(
     let width = extent_x.cast_unsigned() * 2;
     let height = extent_y.cast_unsigned() * 2;
 
+    // Effective size accounts for crosshair scale
+    let (sn, sd) = preview.crosshair_scale;
+    let effective_w = width * sn / sd;
+    let effective_h = height * sn / sd;
+
     let max_size = preview.max_preview_size() * 2;
-    let is_capped = !preview.override_max() && (width > max_size || height > max_size);
+    let exceeds_max = effective_w > max_size || effective_h > max_size;
+    // Auto-disengage override when the size drops back below the threshold
+    if preview.override_max() && !exceeds_max {
+        preview.set_override_max(false);
+    }
+    let is_capped = !preview.override_max() && exceeds_max;
 
     // Top controls row
     ui.horizontal(|ui| {
-        ui.label(format!("Size: {width}x{height}"));
+        if sn != 1 || sd != 1 {
+            ui.label(format!("Size: {width}x{height} (scaled: {effective_w}x{effective_h})"));
+        } else {
+            ui.label(format!("Size: {width}x{height}"));
+        }
         if is_capped {
             let mut ov = preview.override_max();
             let cb = ui.checkbox(&mut ov, egui::RichText::new("Override max size?").color(egui::Color32::RED));
@@ -703,14 +778,17 @@ pub fn render_preview_panel(
             .show_ui(ui, |ui| {
                 if ui.selectable_label(preview.selected_bg == PreviewBackground::None, "None").clicked() {
                     preview.selected_bg = PreviewBackground::None;
+                    preview.bg_pan = egui::Vec2::ZERO;
                     preview.mark_dirty();
                 }
                 if ui.selectable_label(preview.selected_bg == PreviewBackground::CSGO, "CSGO").clicked() {
                     preview.selected_bg = PreviewBackground::CSGO;
+                    preview.bg_pan = egui::Vec2::ZERO;
                     preview.mark_dirty();
                 }
                 if ui.selectable_label(preview.selected_bg == PreviewBackground::TheFinals, "The Finals").clicked() {
                     preview.selected_bg = PreviewBackground::TheFinals;
+                    preview.bg_pan = egui::Vec2::ZERO;
                     preview.mark_dirty();
                 }
             });
@@ -719,18 +797,58 @@ pub fn render_preview_panel(
     let has_bg = preview.selected_bg != PreviewBackground::None;
     let has_dynamic = pieces.iter().any(|p| is_dynamic(p));
 
-    // Handle scroll-wheel zoom (only when hovering over the preview area)
-    let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
-    if scroll_delta != 0.0 {
-        let factor = 1.0 + scroll_delta * 0.005;
-        preview.zoom_level = (preview.zoom_level * factor).max(0.01);
+    // Handle scroll-wheel: Ctrl+Scroll = crosshair scale (only with background),
+    // plain Scroll = zoom.
+    // We must use input_mut to consume Ctrl+Scroll events before egui interprets
+    // them as a pinch-to-zoom gesture.
+    let ctrl_held = ui.input(|i| i.modifiers.ctrl || i.modifiers.command);
+    if ctrl_held && has_bg {
+        // Consume ALL scroll events when Ctrl is held so egui doesn't zoom
+        let raw_scroll = ui.input_mut(|i| {
+            let delta = i.raw_scroll_delta.y;
+            if delta != 0.0 {
+                // Zero out both scroll sources to prevent egui zoom
+                i.raw_scroll_delta.y = 0.0;
+                i.smooth_scroll_delta.y = 0.0;
+            }
+            delta
+        });
+        if raw_scroll > 0.0 {
+            preview.scale_up();
+        } else if raw_scroll < 0.0 {
+            preview.scale_down();
+        }
+    } else {
+        let scroll_delta = ui.input(|i| i.smooth_scroll_delta.y);
+        if scroll_delta != 0.0 {
+            let factor = 1.0 + scroll_delta * 0.005;
+            preview.zoom_level = (preview.zoom_level * factor).max(0.01);
+        }
     }
 
-    // Show zoom level + reset button
+    // Reset crosshair scale to x1 when background is None
+    if !has_bg && preview.crosshair_scale != (1, 1) {
+        preview.crosshair_scale = (1, 1);
+        preview.mark_dirty();
+    }
+
+    // Show zoom level + crosshair scale (scale only when background is active)
     ui.horizontal(|ui| {
         ui.label(format!("Zoom: {:.0}%", preview.zoom_level * 100.0));
         if ui.small_button("Reset").clicked() {
             preview.zoom_level = 1.0;
+        }
+        if has_bg {
+            ui.separator();
+            ui.label(format!("Crosshair Scale: {}", preview.scale_label()));
+            if ui.small_button("Reset").clicked() {
+                preview.crosshair_scale = (1, 1);
+                preview.mark_dirty();
+            }
+            let (sn, sd) = preview.crosshair_scale;
+            if sn > sd {
+                ui.checkbox(&mut preview.honest_pixels, "Honest Pixels");
+            }
         }
     });
 
@@ -738,19 +856,38 @@ pub fn render_preview_panel(
     let zoom = preview.zoom_level;
 
     if has_bg {
+        if is_capped {
+            // Size too large — show warning instead of compositing
+            let (rect, _) = ui.allocate_exact_size(available_size, egui::Sense::hover());
+            ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, egui::Color32::from_gray(20));
+            ui.painter().text(
+                rect.center(),
+                egui::Align2::CENTER_CENTER,
+                format!("Preview disabled — scaled size {}x{} exceeds max.\nEnable 'Override max size' to render.", effective_w, effective_h),
+                egui::FontId::default(),
+                egui::Color32::from_rgb(255, 100, 100),
+            );
+        } else {
         // Live compositing mode: background + crosshair + dynamic effects
         ctx.request_repaint(); // Always repaint for mouse tracking
 
         // Get the crosshair texture for overlay
         let _crosshair_tex = preview.texture(ctx, pieces);
 
-        // Allocate the preview rect
-        let (rect, response) = ui.allocate_exact_size(available_size, egui::Sense::hover());
+        // Allocate the preview rect (click+drag or middle-drag to pan)
+        let (rect, response) = ui.allocate_exact_size(available_size, egui::Sense::click_and_drag());
         let mouse_in_rect = response.hovered();
         let mouse_pos = response.hover_pos();
 
-        // Hide cursor when hovering
-        if mouse_in_rect {
+        // Pan background with left-click-drag or middle-click-drag
+        if response.dragged_by(egui::PointerButton::Primary)
+            || response.dragged_by(egui::PointerButton::Middle)
+        {
+            preview.bg_pan += response.drag_delta();
+        }
+
+        // Hide cursor when hovering (but not while dragging)
+        if mouse_in_rect && !response.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::None);
         }
 
@@ -764,16 +901,17 @@ pub fn render_preview_panel(
             let composite_w = rect.width() as u32;
             let composite_h = rect.height() as u32;
             if composite_w > 0 && composite_h > 0 {
-                // Zoomed background dimensions
+                // Zoomed background dimensions + pan offset
                 let zbg_w = (bg_w as f32 * zoom) as i32;
                 let zbg_h = (bg_h as f32 * zoom) as i32;
-                let bg_ox = (composite_w as i32 - zbg_w) / 2;
-                let bg_oy = (composite_h as i32 - zbg_h) / 2;
+                let bg_ox = (composite_w as i32 - zbg_w) / 2 + preview.bg_pan.x as i32;
+                let bg_oy = (composite_h as i32 - zbg_h) / 2 + preview.bg_pan.y as i32;
 
                 // Crosshair position (center of crosshair at mouse or at center of rect)
-                // Crosshair is NOT scaled — always native pixel size
-                let ch_w = width;
-                let ch_h = height;
+                // Apply crosshair scale to the rendered size
+                let (sn, sd) = preview.crosshair_scale;
+                let ch_w = width * sn / sd;
+                let ch_h = height * sn / sd;
                 let (ch_cx, ch_cy) = if let Some(mpos) = mouse_pos {
                     let local = mpos - rect.min;
                     (local.x as i32, local.y as i32)
@@ -792,7 +930,11 @@ pub fn render_preview_panel(
                 // Rasterize crosshair for export (dynamic → transparent, keeps piece order)
                 let crosshair_rgba = {
                     let eff = apply_color_override_for_export(pieces, frame);
-                    let svg = generate_svg(ext_x, ext_y, &eff);
+                    let svg = if sn != 1 || sd != 1 {
+                        generate_svg_scaled(ext_x, ext_y, &eff, sn, sd)
+                    } else {
+                        generate_svg(ext_x, ext_y, &eff)
+                    };
                     rasterize_svg(&svg, raster_w, raster_h)
                 };
 
@@ -807,7 +949,11 @@ pub fn render_preview_panel(
                         }
                         mp
                     }).collect();
-                    let svg = generate_svg(ext_x, ext_y, &mask_pieces);
+                    let svg = if sn != 1 || sd != 1 {
+                        generate_svg_scaled(ext_x, ext_y, &mask_pieces, sn, sd)
+                    } else {
+                        generate_svg(ext_x, ext_y, &mask_pieces)
+                    };
                     rasterize_svg(&svg, raster_w, raster_h)
                 } else {
                     None
@@ -815,6 +961,13 @@ pub fn render_preview_panel(
 
                 let actual_ch_w = raster_w;
                 let actual_ch_h = raster_h;
+
+                // Precompute scale ratio for honest dynamic effect sampling.
+                // When scaled and honest_pixels is on, we snap background samples
+                // to the native pixel grid so a 2x2 dot scaled to 20x20 still
+                // only samples 4 bg pixels.
+                let scale_ratio = sn as f32 / sd as f32;
+                let is_scaled = sn != sd && preview.honest_pixels;
 
                 // Build composite: background (zoomed) → dynamic effects → crosshair overlay (native)
                 let mut pixels = vec![0u8; (composite_w * composite_h * 4) as usize];
@@ -835,22 +988,57 @@ pub fn render_preview_panel(
                         };
 
                         // Check if this pixel falls within the crosshair bounds
-                        let cx = x as i32 - ch_ox;
-                        let cy = y as i32 - ch_oy;
-                        if cx >= 0 && cy >= 0 && cx < actual_ch_w as i32 && cy < actual_ch_h as i32 {
-                            let ci = ((cy as u32 * actual_ch_w + cx as u32) * 4) as usize;
+                        let lx = x as i32 - ch_ox;
+                        let ly = y as i32 - ch_oy;
+                        if lx >= 0 && ly >= 0 && lx < actual_ch_w as i32 && ly < actual_ch_h as i32 {
+                            let ci = ((ly as u32 * actual_ch_w + lx as u32) * 4) as usize;
 
                             // 2. Dynamic effects (where mask is white, transform bg pixel)
+                            //    When crosshair is scaled, snap bg sample to native pixel
+                            //    grid so the effect honestly represents native resolution.
                             if let Some(ref mask) = mask_rgba {
-                                if ci + 3 < mask.len() && mask[ci + 3] > 127 {
-                                    let (er, eg, eb) = effects.apply_to_pixel(
-                                        pr as f32 / 255.0,
-                                        pg as f32 / 255.0,
-                                        pb as f32 / 255.0,
-                                    );
-                                    pr = (er * 255.0).clamp(0.0, 255.0) as u8;
-                                    pg = (eg * 255.0).clamp(0.0, 255.0) as u8;
-                                    pb = (eb * 255.0).clamp(0.0, 255.0) as u8;
+                                if ci + 3 < mask.len() {
+                                    let mask_alpha = mask[ci + 3] as f32 / 255.0;
+                                    if mask_alpha > 0.001 {
+                                    let (dr, dg, db) = if is_scaled {
+                                        // Quantize to native crosshair pixel grid
+                                        let native_x = (lx as f32 / scale_ratio).floor();
+                                        let native_y = (ly as f32 / scale_ratio).floor();
+                                        // Map native pixel center back to composite space
+                                        let snapped_cx = ch_ox as f32 + (native_x + 0.5) * scale_ratio;
+                                        let snapped_cy = ch_oy as f32 + (native_y + 0.5) * scale_ratio;
+                                        // Sample background at that snapped position
+                                        let sbx = ((snapped_cx - bg_ox as f32) / zoom) as i32;
+                                        let sby = ((snapped_cy - bg_oy as f32) / zoom) as i32;
+                                        if sbx >= 0 && sby >= 0 && sbx < bg_w as i32 && sby < bg_h as i32 {
+                                            let spx = bg.get_pixel(sbx as u32, sby as u32);
+                                            effects.apply_to_pixel(
+                                                spx[0] as f32 / 255.0,
+                                                spx[1] as f32 / 255.0,
+                                                spx[2] as f32 / 255.0,
+                                            )
+                                        } else {
+                                            effects.apply_to_pixel(
+                                                20.0 / 255.0,
+                                                20.0 / 255.0,
+                                                20.0 / 255.0,
+                                            )
+                                        }
+                                    } else {
+                                        effects.apply_to_pixel(
+                                            pr as f32 / 255.0,
+                                            pg as f32 / 255.0,
+                                            pb as f32 / 255.0,
+                                        )
+                                    };
+                                    // Blend: lerp between original bg and effected result by mask alpha
+                                    let orig_r = pr as f32 / 255.0;
+                                    let orig_g = pg as f32 / 255.0;
+                                    let orig_b = pb as f32 / 255.0;
+                                    pr = ((orig_r + (dr - orig_r) * mask_alpha) * 255.0).clamp(0.0, 255.0) as u8;
+                                    pg = ((orig_g + (dg - orig_g) * mask_alpha) * 255.0).clamp(0.0, 255.0) as u8;
+                                    pb = ((orig_b + (db - orig_b) * mask_alpha) * 255.0).clamp(0.0, 255.0) as u8;
+                                    }
                                 }
                             }
 
@@ -907,8 +1095,123 @@ pub fn render_preview_panel(
             ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, egui::Color32::from_gray(20));
             ui.painter().text(rect.center(), egui::Align2::CENTER_CENTER, "Background failed to load", egui::FontId::default(), egui::Color32::GRAY);
         }
+        } // end !is_capped else
     } else {
-        // No background — scale crosshair with zoom
+        // No background — apply dynamic effects with gray background, scale with zoom
+        if has_dynamic && effects.has_any_enabled() {
+            ctx.request_repaint();
+
+            let ext_x = extent_x.cast_unsigned().min(preview.max_preview_size());
+            let ext_y = extent_y.cast_unsigned().min(preview.max_preview_size());
+            let raster_w = ext_x * 2;
+            let raster_h = ext_y * 2;
+            let frame = preview.animation_frame();
+
+            let crosshair_rgba = {
+                let eff = apply_color_override_for_export(pieces, frame);
+                let svg = generate_svg(ext_x, ext_y, &eff);
+                rasterize_svg(&svg, raster_w, raster_h)
+            };
+
+            let mask_rgba = {
+                let mask_pieces: Vec<Piece> = pieces.iter().map(|p| {
+                    let mut mp = p.clone();
+                    if is_dynamic(p) {
+                        mp.set_color_override("#ffffffff");
+                    } else {
+                        mp.set_visible(false);
+                    }
+                    mp
+                }).collect();
+                let svg = generate_svg(ext_x, ext_y, &mask_pieces);
+                rasterize_svg(&svg, raster_w, raster_h)
+            };
+
+            if raster_w > 0 && raster_h > 0 {
+                let mut pixels = vec![0u8; (raster_w * raster_h * 4) as usize];
+                for y in 0..raster_h as usize {
+                    for x in 0..raster_w as usize {
+                        let pi = ((y * raster_w as usize + x) * 4) as usize;
+
+                        let (mut pr, mut pg, mut pb) = (20u8, 20u8, 20u8);
+
+                        if let Some(ref mask) = mask_rgba {
+                            if pi + 3 < mask.len() {
+                                let mask_alpha = mask[pi + 3] as f32 / 255.0;
+                                if mask_alpha > 0.001 {
+                                let (er, eg, eb) = effects.apply_to_pixel(
+                                    pr as f32 / 255.0,
+                                    pg as f32 / 255.0,
+                                    pb as f32 / 255.0,
+                                );
+                                let orig_r = pr as f32 / 255.0;
+                                let orig_g = pg as f32 / 255.0;
+                                let orig_b = pb as f32 / 255.0;
+                                pr = ((orig_r + (er - orig_r) * mask_alpha) * 255.0).clamp(0.0, 255.0) as u8;
+                                pg = ((orig_g + (eg - orig_g) * mask_alpha) * 255.0).clamp(0.0, 255.0) as u8;
+                                pb = ((orig_b + (eb - orig_b) * mask_alpha) * 255.0).clamp(0.0, 255.0) as u8;
+                                }
+                            }
+                        }
+
+                        if let Some(ref ch) = crosshair_rgba {
+                            if pi + 3 < ch.len() {
+                                let ca = ch[pi + 3] as f32 / 255.0;
+                                if ca > 0.001 {
+                                    let sr = ch[pi] as f32 / 255.0;
+                                    let sg = ch[pi + 1] as f32 / 255.0;
+                                    let sb = ch[pi + 2] as f32 / 255.0;
+                                    pr = ((sr + pr as f32 / 255.0 * (1.0 - ca)) * 255.0).clamp(0.0, 255.0) as u8;
+                                    pg = ((sg + pg as f32 / 255.0 * (1.0 - ca)) * 255.0).clamp(0.0, 255.0) as u8;
+                                    pb = ((sb + pb as f32 / 255.0 * (1.0 - ca)) * 255.0).clamp(0.0, 255.0) as u8;
+                                }
+                            }
+                        }
+
+                        pixels[pi] = pr;
+                        pixels[pi + 1] = pg;
+                        pixels[pi + 2] = pb;
+                        pixels[pi + 3] = 255;
+                    }
+                }
+
+                let image = egui::ColorImage::from_rgba_unmultiplied(
+                    [raster_w as usize, raster_h as usize],
+                    &pixels,
+                );
+
+                let tex = ctx.load_texture("crosshair_dynamic", image, egui::TextureOptions::NEAREST);
+
+                let tex_size = tex.size();
+                let aspect = tex_size[0] as f32 / tex_size[1] as f32;
+                let avail_w = available_size.x;
+                let avail_h = available_size.y;
+                let (base_w, base_h) = if avail_w / avail_h > aspect {
+                    (avail_h * aspect, avail_h)
+                } else {
+                    (avail_w, avail_w / aspect)
+                };
+                let img_w = base_w * zoom;
+                let img_h = base_h * zoom;
+
+                egui::ScrollArea::both()
+                    .max_width(avail_w)
+                    .max_height(avail_h)
+                    .show(ui, |ui| {
+                        let img_size = egui::Vec2::new(img_w, img_h);
+                        let (rect, _response) = ui.allocate_exact_size(img_size, egui::Sense::hover());
+                        ui.painter().rect_filled(rect, egui::CornerRadius::ZERO, egui::Color32::from_gray(20));
+                        ui.painter().image(
+                            tex.id(), rect,
+                            egui::Rect::from_min_max(egui::Pos2::ZERO, egui::Pos2::new(1.0, 1.0)),
+                            egui::Color32::WHITE,
+                        );
+                    });
+                return;
+            }
+        }
+
+        // No dynamic effects — use standard texture path
         if let Some(texture) = preview.texture(ctx, pieces) {
             let tex_size = texture.size();
             let aspect = tex_size[0] as f32 / tex_size[1] as f32;

@@ -29,6 +29,9 @@ pub struct DynamicEffects {
     pub hue_rotate: EffectHueRotate,
     #[serde(default)]
     pub saturate: EffectSaturate,
+    /// Overall opacity of the dynamic effect (0.0 = invisible, 1.0 = full).
+    #[serde(default = "default_one")]
+    pub opacity: f64,
 }
 
 impl Default for DynamicEffects {
@@ -41,6 +44,7 @@ impl Default for DynamicEffects {
             luma_invert: EffectSimple { enabled: false, strength: 1.0 },
             hue_rotate: EffectHueRotate { enabled: false, strength: 1.0, angle: 180.0 },
             saturate: EffectSaturate { enabled: false, strength: 1.0, amount: 1.0 },
+            opacity: 1.0,
         }
     }
 }
@@ -81,12 +85,16 @@ impl DynamicEffects {
         if self.saturate.enabled {
             s.push_str(&format!("saturate {:.4} {:.4}\n", self.saturate.strength, self.saturate.amount));
         }
+        if self.opacity < 1.0 {
+            s.push_str(&format!("opacity {:.4}\n", self.opacity));
+        }
         s
     }
 
     /// Apply the effect chain to an RGB pixel (CPU-side, for live preview).
     /// Input/output are 0.0-1.0 floats. Fixed order.
     pub fn apply_to_pixel(&self, r: f32, g: f32, b: f32) -> (f32, f32, f32) {
+        let orig = [r, g, b];
         let mut c = [r, g, b];
         if self.invert.enabled {
             let s = self.invert.strength as f32;
@@ -126,6 +134,11 @@ impl DynamicEffects {
             let hsl = rgb_to_hsl_f32(c[0], c[1], c[2]);
             let sat = hsl_to_rgb_f32(hsl[0], self.saturate.amount as f32, 1.0 - hsl[2]);
             c = [lerp(c[0], sat[0], s), lerp(c[1], sat[1], s), lerp(c[2], sat[2], s)];
+        }
+        // Apply overall opacity: blend between original and fully-effected
+        if self.opacity < 1.0 {
+            let o = self.opacity as f32;
+            c = [lerp(orig[0], c[0], o), lerp(orig[1], c[1], o), lerp(orig[2], c[2], o)];
         }
         (c[0], c[1], c[2])
     }
@@ -436,10 +449,26 @@ impl std::fmt::Display for OddAnchor {
 pub enum Piece {
     Cross {
         origin: (i32, i32),
-        h_gap: i32,
-        v_gap: i32,
-        length: i32,
-        thickness: i32,
+        #[serde(default)]
+        left_gap: i32,
+        #[serde(default)]
+        right_gap: i32,
+        #[serde(default)]
+        top_gap: i32,
+        #[serde(default)]
+        bottom_gap: i32,
+        #[serde(default)]
+        left_thickness: i32,
+        #[serde(default)]
+        right_thickness: i32,
+        #[serde(default)]
+        top_thickness: i32,
+        #[serde(default)]
+        bottom_thickness: i32,
+        left_length: i32,
+        right_length: i32,
+        top_length: i32,
+        bottom_length: i32,
         color: String,
         #[serde(default)]
         color_type: ColorType,
@@ -448,6 +477,8 @@ pub enum Piece {
         odd_anchor: OddAnchor,
         #[serde(default = "default_true")]
         lock_gap: bool,
+        #[serde(default = "default_true")]
+        lock_all: bool,
     },
     Dot {
         origin: (i32, i32),
@@ -469,6 +500,8 @@ pub enum Piece {
         visible: bool,
         #[serde(default)]
         odd_anchor: OddAnchor,
+        #[serde(default)]
+        anti_aliasing: bool,
     },
     Rectangle {
         origin: (i32, i32),
@@ -754,15 +787,24 @@ pub fn default_pieces() -> Vec<Piece> {
         },
         Cross {
             origin: (0, 0),
-            h_gap: 2,
-            v_gap: 2,
-            length: 2,
-            thickness: 2,
+            left_gap: 2,
+            right_gap: 2,
+            top_gap: 2,
+            bottom_gap: 2,
+            left_thickness: 2,
+            right_thickness: 2,
+            top_thickness: 2,
+            bottom_thickness: 2,
+            left_length: 2,
+            right_length: 2,
+            top_length: 2,
+            bottom_length: 2,
             color: "#00ff7dff".to_string(),
             color_type: default_color_type.clone(),
             visible: true,
             odd_anchor: OddAnchor::default(),
             lock_gap: true,
+            lock_all: true,
         },
         HappyFace {
             origin: (-50, -10),
@@ -773,6 +815,30 @@ pub fn default_pieces() -> Vec<Piece> {
             odd_anchor: OddAnchor::default(),
         },
     ]
+}
+
+pub fn default_cross_piece() -> Piece {
+    Piece::Cross {
+        origin: (0, 0),
+        left_gap: 2,
+        right_gap: 2,
+        top_gap: 2,
+        bottom_gap: 2,
+        left_thickness: 2,
+        right_thickness: 2,
+        top_thickness: 2,
+        bottom_thickness: 2,
+        left_length: 4,
+        right_length: 4,
+        top_length: 4,
+        bottom_length: 4,
+        color: "#00ff7dff".to_string(),
+        color_type: ColorType::default(),
+        visible: true,
+        odd_anchor: OddAnchor::default(),
+        lock_gap: true,
+        lock_all: true,
+    }
 }
 
 /// All legacy mode file tags (for cleanup of old per-mode mask files).

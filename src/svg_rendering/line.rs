@@ -1,5 +1,7 @@
+use std::fmt::Write;
+
 use crate::types::Piece;
-use super::{split_dim, write_rect};
+use super::{apply_color, split_dim};
 
 pub fn draw_line(svg: &mut String, cx: i32, cy: i32, piece: &Piece) {
     let Piece::Line {
@@ -8,6 +10,7 @@ pub fn draw_line(svg: &mut String, cx: i32, cy: i32, piece: &Piece) {
         thickness,
         color,
         odd_anchor,
+        anti_aliasing,
         ..
     } = piece
     else {
@@ -16,30 +19,49 @@ pub fn draw_line(svg: &mut String, cx: i32, cy: i32, piece: &Piece) {
 
     let (ox, oy) = *origin;
     let (vx, vy) = *vector;
-    let (ax, ay) = odd_anchor.offset();
+    let (_ax, ay) = odd_anchor.offset();
     let t = *thickness;
 
-    let x1 = cx + ox;
-    let y1 = cy - oy;
-    let x2 = cx + ox + vx;
-    let y2 = cy - oy - vy;
+    let x1 = cx as f64 + ox as f64;
+    let y1 = cy as f64 - oy as f64;
+    let x2 = cx as f64 + ox as f64 + vx as f64;
+    let y2 = cy as f64 - oy as f64 - vy as f64;
 
-    let dx = (x2 - x1).abs();
-    let dy = (y2 - y1).abs();
+    let dx = x2 - x1;
+    let dy = y2 - y1;
+    let line_len = (dx * dx + dy * dy).sqrt();
 
-    if dx >= dy {
-        let min_x = x1.min(x2);
-        let max_x = x1.max(x2);
-        let y_center = (y1 + y2) as f64 / 2.0;
-        let (t_neg, _t_pos) = split_dim(t, ay);
-        let w = (max_x - min_x + 1) as f64;
-        write_rect(svg, min_x as f64, y_center - t_neg, w, t as f64, color);
+    if line_len < 0.001 {
+        return;
+    }
+
+    let (t_neg, t_pos) = split_dim(t, ay);
+
+    // Perpendicular unit vector (points "left" of the line direction)
+    let ux = -dy / line_len;
+    let uy = dx / line_len;
+
+    // Extend t_neg in the negative perpendicular direction, t_pos in the positive
+    let corners: [(f64, f64); 4] = [
+        (x1 - ux * t_neg, y1 - uy * t_neg),
+        (x1 + ux * t_pos, y1 + uy * t_pos),
+        (x2 + ux * t_pos, y2 + uy * t_pos),
+        (x2 - ux * t_neg, y2 - uy * t_neg),
+    ];
+
+    let mut path = String::from("M");
+    for (i, (px, py)) in corners.iter().enumerate() {
+        if i > 0 {
+            path.push('L');
+        }
+        path.push_str(&format!("{px:.1},{py:.1}"));
+    }
+    path.push('Z');
+
+    let fill = apply_color(color);
+    if *anti_aliasing {
+        write!(svg, r#"<path d="{path}" {fill} shape-rendering="geometricPrecision"/>"#).unwrap();
     } else {
-        let min_y = y1.min(y2);
-        let max_y = y1.max(y2);
-        let x_center = (x1 + x2) as f64 / 2.0;
-        let (t_neg, _t_pos) = split_dim(t, ax);
-        let h = (max_y - min_y + 1) as f64;
-        write_rect(svg, x_center - t_neg, min_y as f64, t as f64, h, color);
+        write!(svg, r#"<path d="{path}" {fill} shape-rendering="crispEdges"/>"#).unwrap();
     }
 }

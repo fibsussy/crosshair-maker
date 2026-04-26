@@ -29,6 +29,23 @@ struct CrosshairApp {
     new_project_name: String,
     piece_thumbnails: preview::PieceThumbnailCache,
     recent_thumbnails: preview::RecentThumbnailCache,
+    /// Whether the project has unsaved changes.
+    has_unsaved_changes: bool,
+    /// Snapshot of pieces at last save (for dirty tracking).
+    last_saved_snapshot: String,
+    /// Pending action that triggered unsaved-changes dialog.
+    pending_unsaved_action: Option<UnsavedAction>,
+    /// Confirmation dialog for removing a recent crosshair.
+    show_remove_recent_confirm: Option<usize>,
+    /// Error message from loading a project.
+    load_error: Option<String>,
+}
+
+#[derive(Clone)]
+enum UnsavedAction {
+    OpenProject(PathBuf),
+    NewProject(String),
+    SetCurrent(PathBuf),
 }
 
 impl CrosshairApp {
@@ -65,7 +82,29 @@ impl CrosshairApp {
             new_project_name: String::new(),
             piece_thumbnails: preview::PieceThumbnailCache::new(),
             recent_thumbnails: preview::RecentThumbnailCache::new(),
+            has_unsaved_changes: false,
+            last_saved_snapshot: Self::take_snapshot(&types::default_pieces(), &DynamicEffects::default()),
+            pending_unsaved_action: None,
+            show_remove_recent_confirm: None,
+            load_error: None,
         }
+    }
+
+    fn take_snapshot(pieces: &[types::Piece], dynamic_effects: &DynamicEffects) -> String {
+        serde_json::to_string(&(pieces, dynamic_effects)).unwrap_or_default()
+    }
+
+    fn take_snapshot_current(&self) -> String {
+        Self::take_snapshot(&self.pieces, &self.dynamic_effects)
+    }
+
+    fn mark_saved(&mut self) {
+        self.last_saved_snapshot = self.take_snapshot_current();
+        self.has_unsaved_changes = false;
+    }
+
+    fn check_unsaved(&mut self) {
+        self.has_unsaved_changes = self.take_snapshot_current() != self.last_saved_snapshot;
     }
 
     fn update_piece_thumbnails(&mut self, ctx: &egui::Context) {
@@ -101,6 +140,34 @@ impl CrosshairApp {
         project_io::save_current_exports(&self.pieces, &self.dynamic_effects);
         self.config.current_crosshair = Some(path);
         project_io::save_config(&self.config);
+    }
+
+    fn remove_recent_crosshair(&mut self, idx: usize) {
+        if let Some(path) = self.config.recent_crosshairs.get(idx).cloned() {
+            self.config.recent_crosshairs.remove(idx);
+            project_io::save_config(&self.config);
+            self.recent_thumbnails.invalidate(&path);
+            if let Some(stem) = path.file_stem() {
+                let stem = stem.to_string_lossy();
+                let parent = path.parent().unwrap_or(&path);
+                let _ = std::fs::remove_file(path.clone());
+                let _ = std::fs::remove_file(parent.join(format!("{}.svg", stem)));
+                let _ = std::fs::remove_file(parent.join(format!("{}.png", stem)));
+                let _ = std::fs::remove_file(parent.join(format!("{}.apng", stem)));
+                let _ = std::fs::remove_file(parent.join(format!("{}.dynamic.png", stem)));
+                let _ = std::fs::remove_file(parent.join(format!("{}.mask.png", stem)));
+                let _ = std::fs::remove_file(parent.join(format!("{}.mask.apng", stem)));
+                if let Ok(entries) = std::fs::read_dir(parent) {
+                    for entry in entries.flatten() {
+                        let name = entry.file_name().to_string_lossy().to_string();
+                        if name.starts_with(&format!("{}.mask.", stem)) {
+                            let _ = std::fs::remove_file(entry.path());
+                        }
+                    }
+                }
+            }
+            self.status_message = "Crosshair removed".to_string();
+        }
     }
 
     fn export_svg(&mut self) {
@@ -274,6 +341,7 @@ impl CrosshairApp {
             if project_io::save_project(&project, &mut self.config, Some(path.clone())).is_some() {
                 self.save_with_exports(path);
                 self.invalidate_recent_thumbnail(path);
+                self.mark_saved();
                 self.status_message = format!("Saved to {}", path.display());
             } else {
                 self.status_message = "Failed to save project".to_string();
@@ -302,6 +370,7 @@ impl CrosshairApp {
             self.save_with_exports(&path);
             self.invalidate_recent_thumbnail(&path);
             self.current_file_path = Some(path.clone());
+            self.mark_saved();
             self.status_message = format!("Saved as '{}' to {}", name, path.display());
         } else {
             self.status_message = "Failed to save project".to_string();
@@ -315,26 +384,32 @@ impl CrosshairApp {
         self.project_name = name.to_string();
         self.current_file_path = None;
         self.selected_indices.clear();
-        self.preview = PreviewState::new();
+        self.preview.mark_dirty();
         self.piece_thumbnails = preview::PieceThumbnailCache::new();
         self.show_new_dialog = false;
+        self.mark_saved();
         self.status_message = format!("New project '{}'", name);
     }
 
     fn open_project(&mut self, path: PathBuf) {
-        if let Some(project) = project_io::load_project(&path) {
-            let name = project.name.clone();
-            self.pieces = project.pieces;
-            self.dynamic_effects = project.dynamic_effects;
-            self.project_name = name.clone();
-            self.current_file_path = Some(path.clone());
-            self.selected_indices.clear();
-            self.preview = PreviewState::new();
-            self.piece_thumbnails = preview::PieceThumbnailCache::new();
-            project_io::add_to_recent(&mut self.config, path.clone());
-            self.status_message = format!("Opened '{}'", name);
-        } else {
-            self.status_message = format!("Failed to open {}", path.display());
+        match project_io::load_project(&path) {
+            Ok(project) => {
+                let name = project.name.clone();
+                self.pieces = project.pieces;
+                self.dynamic_effects = project.dynamic_effects;
+                self.project_name = name.clone();
+                self.current_file_path = Some(path.clone());
+                self.selected_indices.clear();
+                self.preview.mark_dirty();
+                self.piece_thumbnails = preview::PieceThumbnailCache::new();
+                project_io::add_to_recent(&mut self.config, path.clone());
+                self.mark_saved();
+                self.status_message = format!("Opened '{}'", name);
+            }
+            Err(e) => {
+                self.status_message = format!("Failed to open {}", path.display());
+                self.load_error = Some(e);
+            }
         }
     }
 }
@@ -357,6 +432,8 @@ impl eframe::App for CrosshairApp {
         let mut do_export_png = false;
         let mut do_export_apng = false;
         let mut do_set_current: Option<PathBuf> = None;
+
+        self.check_unsaved();
 
         egui::SidePanel::left("pieces_panel")
             .resizable(true)
@@ -387,6 +464,7 @@ impl eframe::App for CrosshairApp {
                     || do_export_apng = true,
                     || self.show_delete_confirm = true,
                     |path| do_set_current = Some(path),
+                    |idx| self.show_remove_recent_confirm = Some(idx),
                 );
                 if !self.selected_indices.is_empty() {
                     mark_dirty = true;
@@ -397,7 +475,15 @@ impl eframe::App for CrosshairApp {
             });
 
         if let Some(path) = open_path {
-            self.open_project(path);
+            // Skip save prompt if default project with no changes
+            let is_default_project = self.current_file_path.is_none();
+            let should_skip_prompt = is_default_project && !self.has_unsaved_changes;
+            
+            if self.has_unsaved_changes && !should_skip_prompt {
+                self.pending_unsaved_action = Some(UnsavedAction::OpenProject(path));
+            } else {
+                self.open_project(path);
+            }
         }
         if do_save {
             self.save_project();
@@ -415,9 +501,19 @@ impl eframe::App for CrosshairApp {
             self.export_apng();
         }
         if let Some(path) = do_set_current {
-            self.open_project(path.clone());
-            self.set_as_current(path);
-            self.save_project();
+            // Skip save prompt if:
+            // 1. No file path loaded yet (default project), AND
+            // 2. No actual changes made from default
+            let is_default_project = self.current_file_path.is_none();
+            let should_skip_prompt = is_default_project && !self.has_unsaved_changes;
+            
+            if self.has_unsaved_changes && !should_skip_prompt {
+                self.pending_unsaved_action = Some(UnsavedAction::SetCurrent(path));
+            } else {
+                self.open_project(path.clone());
+                self.set_as_current(path);
+                self.save_project();
+            }
         }
 
         egui::SidePanel::right("properties_panel")
@@ -433,6 +529,7 @@ impl eframe::App for CrosshairApp {
                         if let Some(piece) = self.pieces.get_mut(idx) {
                             if ui_properties::edit_piece(ui, piece, &mut self.dynamic_effects) {
                                 self.preview.mark_dirty();
+                                self.check_unsaved();
                             }
                         }
                     } else if self.selected_indices.len() > 1 {
@@ -478,7 +575,16 @@ impl eframe::App for CrosshairApp {
                 if name.eq_ignore_ascii_case("current") {
                     self.status_message = "Cannot use name 'current' — reserved".to_string();
                 } else {
-                    self.new_project(&name);
+                    self.show_new_dialog = false;
+                    // Skip save prompt if default project with no changes
+                    let is_default_project = self.current_file_path.is_none();
+                    let should_skip_prompt = is_default_project && !self.has_unsaved_changes;
+                    
+                    if self.has_unsaved_changes && !should_skip_prompt {
+                        self.pending_unsaved_action = Some(UnsavedAction::NewProject(name));
+                    } else {
+                        self.new_project(&name);
+                    }
                 }
             }
         }
@@ -519,6 +625,7 @@ impl eframe::App for CrosshairApp {
             egui::Window::new("Confirm Delete")
                 .collapsible(false)
                 .resizable(false)
+                .anchor(egui::Align2::LEFT_TOP, [10.0, 50.0])
                 .show(ctx, |ui| {
                     ui.label("Are you sure you want to remove the selected piece?");
                     ui.horizontal(|ui| {
@@ -543,7 +650,138 @@ impl eframe::App for CrosshairApp {
                 }
                 self.selected_indices.clear();
                 self.preview.mark_dirty();
+                self.check_unsaved();
                 self.show_delete_confirm = false;
+            }
+        }
+
+        if let Some(ref action) = self.pending_unsaved_action {
+            let action = action.clone();
+            let mut proceed = false;
+            let mut discard = false;
+            let mut cancel = false;
+            egui::Window::new("Unsaved Changes")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("You have unsaved changes. Do you want to save before continuing?");
+                    ui.horizontal(|ui| {
+                        if ui.button("Save & Continue").clicked() {
+                            proceed = true;
+                        }
+                        if ui.button("Don't Save").clicked() {
+                            discard = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if cancel {
+                self.pending_unsaved_action = None;
+            } else if discard {
+                match action {
+                    UnsavedAction::OpenProject(path) => {
+                        self.open_project(path);
+                    }
+                    UnsavedAction::NewProject(name) => {
+                        self.new_project(&name);
+                    }
+                    UnsavedAction::SetCurrent(path) => {
+                        self.open_project(path.clone());
+                        self.set_as_current(path);
+                        self.save_project();
+                    }
+                }
+                self.pending_unsaved_action = None;
+            } else if proceed {
+                self.save_project();
+                match action {
+                    UnsavedAction::OpenProject(path) => {
+                        self.open_project(path);
+                    }
+                    UnsavedAction::NewProject(name) => {
+                        self.new_project(&name);
+                    }
+                    UnsavedAction::SetCurrent(path) => {
+                        self.open_project(path.clone());
+                        self.set_as_current(path);
+                        self.save_project();
+                    }
+                }
+                self.pending_unsaved_action = None;
+            }
+        }
+
+        if let Some(idx) = self.show_remove_recent_confirm {
+            let mut remove = false;
+            let mut cancel = false;
+            egui::Window::new("Remove Crosshair")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::LEFT_TOP, [10.0, 50.0])
+                .show(ctx, |ui| {
+                    ui.label("Remove this crosshair from recent list?");
+                    ui.label("This will also delete the project files (JSON, SVG, PNG, APNG, and dynamic files).");
+                    ui.horizontal(|ui| {
+                        if ui.button("Remove").clicked() {
+                            remove = true;
+                        }
+                        if ui.button("Cancel").clicked() {
+                            cancel = true;
+                        }
+                    });
+                });
+            if cancel {
+                self.show_remove_recent_confirm = None;
+            } else if remove {
+                self.remove_recent_crosshair(idx);
+                self.show_remove_recent_confirm = None;
+            }
+        }
+
+        if let Some(ref error) = self.load_error {
+            let mut close = false;
+            egui::Window::new("Failed to Load Project")
+                .collapsible(false)
+                .resizable(false)
+                .anchor(egui::Align2::CENTER_CENTER, [0.0, 0.0])
+                .show(ctx, |ui| {
+                    ui.label("Could not load the project file:");
+                    ui.separator();
+                    let file_info = if let Some(ref path) = self.current_file_path.as_ref().or_else(|| {
+                        self.config.recent_crosshairs.first()
+                    }) {
+                        format!("File: {}", path.display())
+                    } else {
+                        String::new()
+                    };
+                    if !file_info.is_empty() {
+                        ui.label(&file_info);
+                    }
+                    ui.label(egui::RichText::new(error).color(egui::Color32::RED));
+                    ui.separator();
+                    ui.label("This may be due to an incompatible file format from an older version.");
+                    ui.label("The file may need to be re-saved to update its format.");
+                    ui.horizontal(|ui| {
+                        let full_error = format!(
+                            "Failed to Load Project\n{}\n{}\n\n{}\n{}\n",
+                            if !file_info.is_empty() { &file_info } else { "No file path" },
+                            error,
+                            "This may be due to an incompatible file format from an older version.",
+                            "The file may need to be re-saved to update its format."
+                        );
+                        if ui.button("Copy Error").clicked() {
+                            ui.ctx().copy_text(full_error);
+                        }
+                        if ui.button("OK").clicked() {
+                            close = true;
+                        }
+                    });
+                });
+            if close {
+                self.load_error = None;
             }
         }
     }
